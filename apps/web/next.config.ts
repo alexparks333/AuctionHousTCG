@@ -1,5 +1,18 @@
 import type { NextConfig } from "next";
 
+// Supabase Storage serves the listing photos — its host comes from the same
+// NEXT_PUBLIC_SUPABASE_URL the app already uses, so a different Supabase
+// project (e.g. production) just works. Next loads .env files before this
+// config. Unset (a build with no env, like CI) simply allows no Supabase
+// images.
+const supabaseHost = (() => {
+  try {
+    return process.env.NEXT_PUBLIC_SUPABASE_URL ? new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).hostname : null;
+  } catch {
+    return null;
+  }
+})();
+
 const nextConfig: NextConfig = {
   // Next's dev server (Turbopack) blocks cross-origin requests for its own
   // dev assets by default — loading the site from a LAN IP instead of
@@ -19,12 +32,16 @@ const nextConfig: NextConfig = {
         protocol: "https",
         hostname: "lh3.googleusercontent.com",
       },
-      {
-        // Supabase Storage — real uploaded listing photos (CLAUDE.md §6.13).
-        protocol: "https",
-        hostname: "uyhrpwszltsbzmiyxdwr.supabase.co",
-        pathname: "/storage/v1/object/public/**",
-      },
+      // Supabase Storage — real uploaded listing photos (CLAUDE.md §6.13).
+      ...(supabaseHost
+        ? [
+            {
+              protocol: "https" as const,
+              hostname: supabaseHost,
+              pathname: "/storage/v1/object/public/**",
+            },
+          ]
+        : []),
     ],
   },
 };
