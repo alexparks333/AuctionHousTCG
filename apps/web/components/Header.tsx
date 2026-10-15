@@ -6,6 +6,8 @@ import CategoryNav from "./CategoryNav";
 import AccountMenu from "./AccountMenu";
 import NotificationBell from "./NotificationBell";
 import AccountBannedBanner from "./AccountBannedBanner";
+import TermsAcceptModal from "./TermsAcceptModal";
+import { getAgreementStatus } from "@/lib/agreements";
 import { isSupabaseConfigured } from "@/lib/supabase/is-configured";
 import { getListingCounts, getMe, getMyNotifications, getMyThreads } from "@/lib/api";
 import { getCurrentSession } from "@/lib/session";
@@ -16,7 +18,11 @@ export default async function Header({
   sticky = false,
   variant = "full",
   showCategoryNav = true,
+  hideTermsPrompt = false,
 }: {
+  // The legal pages themselves (LegalPage) — someone must be able to read
+  // the Terms before accepting them, so the accept popup is skipped there.
+  hideTermsPrompt?: boolean;
   searchParams?: SearchParams;
   // The header (top bar, search, and category nav) scrolls away normally
   // everywhere by default, per product decision — it should never pin to
@@ -73,7 +79,7 @@ export default async function Header({
   // user_metadata — a Go API outage degrades to fullName/email in
   // AccountMenu (and an empty bell/message badge) rather than breaking the
   // header entirely, same reasoning for all four .catch()es below.
-  const [me, counts, notifications, messages] = await Promise.all([
+  const [me, counts, notifications, messages, agreements] = await Promise.all([
     session ? getMe(session.access_token).catch(() => null) : Promise.resolve(null),
     getListingCounts().catch(() => ({}) as Record<string, number>),
     session
@@ -82,6 +88,7 @@ export default async function Header({
     session
       ? getMyThreads(session.access_token).catch(() => ({ threads: [], unreadCount: 0 }))
       : Promise.resolve({ threads: [], unreadCount: 0 }),
+    session ? getAgreementStatus(session.access_token) : Promise.resolve(null),
   ]);
   const activeQuery = paramStr(searchParams, "q");
   // Every other active filter gets carried forward as a hidden input when
@@ -92,6 +99,14 @@ export default async function Header({
   return (
     <header className={`bg-white shadow-sm ${sticky ? "sticky top-0 z-40" : ""}`}>
       {me?.isBanned && <AccountBannedBanner variant="self" />}
+      {/* null (API unreachable) shows nothing — the API still refuses
+          writes until the Terms are accepted. isUpdate: the account existed
+          before this version took effect, so it's an update, not a sign-up. */}
+      {agreements && !agreements.terms && !hideTermsPrompt && (
+        <TermsAcceptModal
+          isUpdate={me ? Date.parse(me.createdAt) < Date.parse(agreements.termsVersion) : false}
+        />
+      )}
       <TopBar tier={me?.tier ?? null} />
       <div className="flex items-center gap-3 py-0.5 pl-3 pr-10 sm:gap-4 sm:pl-4 sm:pr-12 lg:pl-5 lg:pr-14">
         <Link href="/" className="flex shrink-0 items-center gap-1">

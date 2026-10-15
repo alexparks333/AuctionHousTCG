@@ -3,9 +3,8 @@ import Link from "next/link";
 type FooterLink = { label: string; href: string };
 
 // Every link points at a real page — add a link here only once its page
-// exists, never as a "#" placeholder. ("Terms" returns once the site-wide
-// Terms of Service is written; "Grading verification" once cert lookups are
-// real, CLAUDE.md §6.6.)
+// exists, never as a "#" placeholder. ("Grading verification" returns once
+// cert lookups are real, CLAUDE.md §6.6.)
 const COLUMNS: { heading: string; links: FooterLink[] }[] = [
   {
     heading: "Buy",
@@ -21,7 +20,7 @@ const COLUMNS: { heading: string; links: FooterLink[] }[] = [
       { label: "Start selling", href: "/sell" },
       { label: "Seller fees", href: "/tiers" },
       { label: "Seller tiers", href: "/tiers" },
-      { label: "Seller information", href: "/seller-terms" },
+      { label: "Seller Agreement", href: "/seller-terms" },
     ],
   },
   {
@@ -37,6 +36,7 @@ const COLUMNS: { heading: string; links: FooterLink[] }[] = [
     links: [
       { label: "About", href: "/about" },
       { label: "Help & Support", href: "/support" },
+      { label: "Terms", href: "/terms" },
       { label: "Privacy", href: "/privacy" },
     ],
   },

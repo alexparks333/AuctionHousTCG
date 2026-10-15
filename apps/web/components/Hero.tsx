@@ -185,7 +185,7 @@ function FeeCompareCard({ tier, rate }: { tier: Listing["sellerTier"] | null; ra
           <span className="text-2xl font-extrabold text-brand-gold-light">+{formatPrice(saved)}</span>
         </div>
         <p className="mt-3 text-center text-[11px] text-white/40">
-          Fees on a {formatPrice(EXAMPLE_SALE_CENTS)} sale. Money goes straight to your own Stripe account.
+          Fees on a {formatPrice(EXAMPLE_SALE_CENTS)} sale. Payouts go to your own Stripe account.
         </p>
       </div>
     </div>

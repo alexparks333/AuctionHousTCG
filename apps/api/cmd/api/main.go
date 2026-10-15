@@ -14,6 +14,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"auctionhous-tcg/api/internal/address"
+	"auctionhous-tcg/api/internal/agreement"
 	"auctionhous-tcg/api/internal/auction"
 	"auctionhous-tcg/api/internal/buyerreview"
 	"auctionhous-tcg/api/internal/cardcatalog"
@@ -111,6 +112,8 @@ func main() {
 		mux.Handle("/me", verifier.RequireAuth(user.HandleMe(pool)))
 		mux.Handle("POST /me/username", verifier.RequireAuth(user.HandleSetUsername(pool)))
 		mux.Handle("POST /me/bio", verifier.RequireAuth(user.HandleSetBio(pool)))
+		mux.Handle("GET /me/agreements", verifier.RequireAuth(agreement.HandleStatus(pool)))
+		mux.Handle("POST /me/agreements", verifier.RequireAuth(agreement.HandleAccept(pool)))
 		// Account deletion has to remove the Supabase Auth login too, which
 		// needs the service role key — without it, deletion isn't offered.
 		if cfg.SupabaseServiceRoleKey == "" {
@@ -122,7 +125,7 @@ func main() {
 		mux.Handle("GET /me/address", verifier.RequireAuth(address.HandleGet(pool)))
 		mux.Handle("POST /me/address", verifier.RequireAuth(address.HandleUpsert(pool)))
 		mux.Handle("GET /me/singles", verifier.RequireAuth(singles.HandleListMine(pool)))
-		mux.Handle("POST /me/singles", verifier.RequireAuth(singles.HandleAdd(pool, catalogClient)))
+		mux.Handle("POST /me/singles", verifier.RequireAuth(agreement.RequireSeller(pool, singles.HandleAdd(pool, catalogClient))))
 		mux.Handle("PATCH /me/singles/{id}", verifier.RequireAuth(singles.HandleUpdate(pool)))
 		mux.Handle("DELETE /me/singles/{id}", verifier.RequireAuth(singles.HandleRemove(pool)))
 		mux.HandleFunc("GET /users/{username}/singles", singles.HandleListForUser(pool))
@@ -151,7 +154,7 @@ func main() {
 			log.Println("PITNEY_BOWES_CLIENT_ID/SECRET not set — tracked-envelope label purchase disabled (see apps/api/.env.example)")
 		}
 		mux.Handle("POST /shipping/verify-address", verifier.RequireAuth(shipping.HandleVerifyAddress(pbClient)))
-		mux.Handle("POST /listings", verifier.RequireAuth(listing.HandleCreate(pool, shippingClient)))
+		mux.Handle("POST /listings", verifier.RequireAuth(agreement.RequireSeller(pool, listing.HandleCreate(pool, shippingClient))))
 		mux.HandleFunc("GET /listings", listing.HandleList(pool))
 		mux.HandleFunc("GET /listings/counts", listing.HandleCounts(pool))
 		mux.HandleFunc("GET /listings/{id}", listing.HandleGet(pool))
@@ -200,8 +203,8 @@ func main() {
 			mux.Handle("DELETE /me/payment-methods/banks/{id}", verifier.RequireAuth(paymentmethod.HandleDelete(pool, paymentClient)))
 
 			mux.Handle("GET /me/seller/connect-account", verifier.RequireAuth(seller.HandleGetConnectAccount(pool)))
-			mux.Handle("POST /me/seller/connect-account", verifier.RequireAuth(seller.HandleCreateConnectAccount(pool, paymentClient, cfg.WebOrigin)))
-			mux.Handle("POST /me/seller/connect-account/onboarding-link", verifier.RequireAuth(seller.HandleCreateOnboardingLink(pool, paymentClient, cfg.WebOrigin)))
+			mux.Handle("POST /me/seller/connect-account", verifier.RequireAuth(agreement.RequireSeller(pool, seller.HandleCreateConnectAccount(pool, paymentClient, cfg.WebOrigin))))
+			mux.Handle("POST /me/seller/connect-account/onboarding-link", verifier.RequireAuth(agreement.RequireSeller(pool, seller.HandleCreateOnboardingLink(pool, paymentClient, cfg.WebOrigin))))
 
 			mux.Handle("GET /me/seller/tier", verifier.RequireAuth(seller.HandleGetMyTier(pool)))
 			mux.Handle("POST /me/seller/hous-trust/apply", verifier.RequireAuth(seller.HandleApplyForHousTrust(pool)))
@@ -369,7 +372,7 @@ func main() {
 
 	var handler http.Handler = mux
 	if pool != nil && verifier != nil {
-		handler = platform.WithBanGuard(pool, verifier, mux)
+		handler = platform.WithBanGuard(pool, verifier, agreement.TermsVersion, mux)
 	}
 
 	log.Printf("api listening on :%s (CORS allowing %v)", cfg.Port, corsOrigins)

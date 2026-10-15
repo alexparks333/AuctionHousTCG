@@ -6,11 +6,13 @@ import { createClient } from "@/lib/supabase/client";
 import { isSupabaseConfigured } from "@/lib/supabase/is-configured";
 import { useUsernameAvailability } from "@/hooks/useUsernameAvailability";
 import GoogleSignInButton from "./GoogleSignInButton";
+import { TERMS_VERSION } from "@/lib/agreements";
 
 export default function SignUpForm() {
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [agreed, setAgreed] = useState(false);
   const [status, setStatus] = useState<"idle" | "loading" | "sent" | "error">("idle");
   const [error, setError] = useState("");
   const usernameStatus = useUsernameAvailability(username);
@@ -21,6 +23,12 @@ export default function SignUpForm() {
 
     if (usernameStatus !== "available") {
       setError("Choose an available username before continuing.");
+      setStatus("error");
+      return;
+    }
+
+    if (!agreed) {
+      setError("Please agree to the Terms of Service and Privacy Policy to continue.");
       setStatus("error");
       return;
     }
@@ -41,7 +49,9 @@ export default function SignUpForm() {
       password,
       options: {
         emailRedirectTo: `${window.location.origin}/login`,
-        data: { username },
+        // accepted_terms_version is recorded by the signup trigger as this
+        // account's acceptance of the Terms (migration 0065).
+        data: { username, accepted_terms_version: TERMS_VERSION },
       },
     });
 
@@ -57,6 +67,9 @@ export default function SignUpForm() {
     <>
       <div className="mt-6">
         <GoogleSignInButton />
+        <p className="mt-2 text-center text-xs text-gray-400">
+          Signing up with Google? You&apos;ll be asked to accept the Terms next.
+        </p>
       </div>
 
       {status === "sent" ? (
@@ -120,11 +133,32 @@ export default function SignUpForm() {
             />
           </label>
 
+          <label className="flex items-start gap-2.5 text-sm text-gray-600">
+            <input
+              type="checkbox"
+              required
+              checked={agreed}
+              onChange={(e) => setAgreed(e.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300 accent-brand-navy"
+            />
+            <span>
+              I&apos;m at least 18 and I agree to the{" "}
+              <Link href="/terms" target="_blank" className="font-medium text-brand-navy underline">
+                Terms of Service
+              </Link>{" "}
+              and{" "}
+              <Link href="/privacy" target="_blank" className="font-medium text-brand-navy underline">
+                Privacy Policy
+              </Link>
+              .
+            </span>
+          </label>
+
           {error && <p className="text-sm text-brand-urgent">{error}</p>}
 
           <button
             type="submit"
-            disabled={status === "loading" || usernameStatus !== "available"}
+            disabled={status === "loading" || usernameStatus !== "available" || !agreed}
             className="mt-2 rounded-full bg-brand-gold px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-brand-gold-light disabled:opacity-60"
           >
             {status === "loading" ? "Creating account..." : "Create account"}

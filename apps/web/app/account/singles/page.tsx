@@ -1,5 +1,7 @@
 import { getCatalogSets, getMySingles } from "@/lib/api";
 import { getLocalSession } from "@/lib/session";
+import { getAgreementStatus } from "@/lib/agreements";
+import SellerAgreementGate from "@/components/SellerAgreementGate";
 import { ENABLED_GAMES } from "@/lib/types";
 import SinglesShopStudio from "@/components/singles/SinglesShopStudio";
 
@@ -14,9 +16,10 @@ export default async function SinglesShopPage() {
   const games = ENABLED_GAMES.filter((g) => CATALOG_GAMES.includes(g));
   const initialGame = games[0] ?? "Riftbound";
 
-  const [singles, groups] = await Promise.all([
+  const [singles, groups, agreements] = await Promise.all([
     local ? getMySingles(local.accessToken).catch(() => []) : Promise.resolve([]),
     getCatalogSets(initialGame),
+    local ? getAgreementStatus(local.accessToken) : Promise.resolve(null),
   ]);
 
   return (
@@ -27,7 +30,13 @@ export default async function SinglesShopPage() {
         aren&apos;t. Click any card to stock it. Prices are set automatically from the market price, the same in every
         shop. Buyers can add your singles to any order from you at checkout, and it all ships together.
       </p>
-      <SinglesShopStudio games={games} initialGame={initialGame} initialGroups={groups} initialSingles={singles} />
+      {agreements && !agreements.seller ? (
+        <div className="mt-6 max-w-3xl">
+          <SellerAgreementGate compact />
+        </div>
+      ) : (
+        <SinglesShopStudio games={games} initialGame={initialGame} initialGroups={groups} initialSingles={singles} />
+      )}
     </div>
   );
 }

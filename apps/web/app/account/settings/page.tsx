@@ -11,6 +11,8 @@ import UsernameForm from "./UsernameForm";
 import BioForm from "./BioForm";
 import AddressForm from "./AddressForm";
 import DeleteAccountSection from "./DeleteAccountSection";
+import SellerAgreementGate from "@/components/SellerAgreementGate";
+import { getAgreementStatus } from "@/lib/agreements";
 import { getCurrentSession } from "@/lib/session";
 import {
   getMe,
@@ -47,7 +49,7 @@ export default async function AccountSettingsPage() {
     payoutsEnabled: false,
     detailsSubmitted: false,
   };
-  const [me, address, savedCards, savedBanks, connectStatus] = await Promise.all([
+  const [me, address, savedCards, savedBanks, connectStatus, agreements] = await Promise.all([
     session ? getMe(session.access_token).catch(() => null) : Promise.resolve(null),
     session ? getMyAddress(session.access_token).catch(() => null) : Promise.resolve(null),
     session && isStripeConfigured()
@@ -59,6 +61,7 @@ export default async function AccountSettingsPage() {
     session && isStripeConfigured()
       ? getSellerConnectStatus(session.access_token).catch(() => noConnectStatus)
       : Promise.resolve(noConnectStatus),
+    session ? getAgreementStatus(session.access_token) : Promise.resolve(null),
   ]);
   const reviewSummary = me?.username
     ? await getSellerReviews(me.username).catch(() => null)
@@ -219,7 +222,15 @@ export default async function AccountSettingsPage() {
               </span>
               <h2 className="text-sm font-semibold text-gray-900">Payouts</h2>
             </div>
-            <SellerPayoutsSetup initialStatus={connectStatus} />
+            {/* Payout setup is refused by the API until the Seller
+                Agreement is accepted, so that step comes first. */}
+            {agreements && !agreements.seller ? (
+              <div className="mt-3">
+                <SellerAgreementGate compact />
+              </div>
+            ) : (
+              <SellerPayoutsSetup initialStatus={connectStatus} />
+            )}
           </section>
         )}
 

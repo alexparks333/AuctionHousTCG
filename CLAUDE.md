@@ -3,13 +3,18 @@
 This is the initial engineering guide for building AuctionHous - TCG: a P2P auction and
 fixed-price marketplace for trading cards and graded slabs, undercutting TCGplayer/eBay
 fee structures (a 5.5–7% tiered seller commission + $0.30, Gold-tier headline of "6% +
-$0.30" quoted against eBay's ~13.6%) via Stripe Connect **direct charges** — money goes
-straight to the seller's own Stripe account, never a platform-held balance.
+$0.30" quoted against eBay's ~13.6%) via Stripe Connect **separate charges and transfers**:
+the buyer is charged on the platform's Stripe account, the money is held there through
+shipping and the claim window, and `internal/order.ReleaseFunds` transfers the seller's net
+to their connected account on release (`internal/payment`'s package doc). Sellers withdraw
+from the Withdraw page. The legal basis is the **agent-of-payee appointment in the Seller
+Agreement** (`/seller-terms` §3, `docs/Legal_MoneyTransitter.md`) — buyer payment to the
+platform discharges the buyer's debt to the seller. (Older text in this file and some docs
+says "direct charges, never a platform-held balance" — that's stale; the code is the truth.)
 **The originally-planned pre-funded site wallet is removed, not on hold pending a
 redesign** — see the note at the top of §5.1 and §7; this file still describes the old
 wallet architecture below so the history is legible, but no wallet code exists in the
-repo, and the direct-charge model isn't a stopgap, it's the actual resolution to the
-money-transmitter exposure that shut the wallet down (see `docs/PercentageModel.md` §11).
+repo (see `docs/PercentageModel.md` §11).
 
 **Source of truth for the business model:** [`docs/PercentageModel.md`](docs/PercentageModel.md)
 for every fee/tier/payout number (supersedes the flat-2%/wallet-based numbers below and
@@ -391,6 +396,17 @@ How the pieces fit together:
   way, moving off Supabase Auth later is a migration (export users, force a password
   reset, point the Go API at a self-rolled auth flow), not a rewrite of the rest of the
   marketplace.
+
+**Legal agreements are recorded and enforced** (`internal/agreement`, `agreement_acceptances`,
+migration 0065). Documents: Terms of Service (`/terms`, incorporates `/privacy`) and Seller Agreement
+(`/seller-terms`). Versions live in `agreement.TermsVersion`/`SellerVersion` **and**
+`apps/web/lib/agreements.ts` — bump both for a material change and everyone re-accepts. Email
+sign-ups accept via a required checkbox whose version rides in auth metadata and is recorded by the
+signup trigger; everyone else gets `TermsAcceptModal` (rendered by `Header`). `WithBanGuard` refuses
+writes until the current Terms are accepted (exempt: `/me/agreements`, `/me/username`,
+`/me/delete-account`); `agreement.RequireSeller` wraps listing create, singles add, and Connect
+onboarding, with `SellerAgreementGate` shown on `/sell`, `/account/singles` and Settings → Payouts.
+Every deadline quoted in the legal pages mirrors a constant in code — change them together.
 
 **Account deletion is self-serve** (Account Settings → "Delete account", `internal/user/delete.go`,
 `GET`/`POST /me/delete-account`). The `users` row is never removed — orders, reviews, claims, payouts

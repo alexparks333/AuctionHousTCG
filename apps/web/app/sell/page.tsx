@@ -4,6 +4,9 @@ import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import SellWizard from "@/components/SellWizard";
 import SellerPayoutsSetup from "@/components/SellerPayoutsSetup";
+import SellerAgreementGate from "@/components/SellerAgreementGate";
+import TermsAcceptModal from "@/components/TermsAcceptModal";
+import { getAgreementStatus } from "@/lib/agreements";
 import { getSellerConnectStatus, type SellerConnectStatus } from "@/lib/api";
 import { isSupabaseConfigured } from "@/lib/supabase/is-configured";
 import { isStripeConfigured } from "@/lib/stripe";
@@ -35,10 +38,18 @@ export default async function SellPage() {
     connectStatus = await getSellerConnectStatus(session.access_token).catch(() => null);
   }
   const needsOnboarding = connectStatus !== null && !connectStatus.chargesEnabled;
+  // The Seller Agreement comes first — the API refuses payout setup and new
+  // listings until it's accepted. null (API unreachable) falls through to
+  // the wizard, whose own submit the API still gates.
+  const agreements = await getAgreementStatus(session.access_token);
+  const needsSellerAgreement = agreements !== null && !agreements.seller;
 
   return (
     <div className="flex min-h-screen flex-col bg-brand-surface">
       <Header variant="logo-only" />
+      {/* The logo-only header skips the account fetch that normally shows
+          this, so the Sell page shows it itself. */}
+      {agreements && !agreements.terms && <TermsAcceptModal isUpdate={false} />}
       {/* Navy banner like the profile page's cover band; the wizard card
           overlaps its bottom edge. */}
       <section className="relative overflow-hidden bg-gradient-to-br from-brand-navy via-brand-navy-light to-slate-800 text-white">
@@ -56,7 +67,7 @@ export default async function SellPage() {
           <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-brand-gold-light">Sell on AuctionHous</p>
           <h1 className="mt-1 text-3xl font-bold tracking-tight sm:text-4xl">Create a listing</h1>
           <p className="mt-2 max-w-xl text-white/70">
-            List a card as an auction or a fixed-price Buy It Now. Buyers pay you directly through Stripe.
+            List a card as an auction or a fixed-price Buy It Now. Buyers pay securely through Stripe.
           </p>
           <ul className="mt-5 flex flex-wrap gap-2 text-xs font-medium text-white/80">
             {["Low seller fees", "Autofill from the card catalog", "Tracked shipping labels"].map((t) => (
@@ -70,7 +81,9 @@ export default async function SellPage() {
 
       <main className="relative mx-auto -mt-16 w-full max-w-4xl flex-1 px-4 pb-14 sm:px-8">
 
-        {needsOnboarding && connectStatus ? (
+        {needsSellerAgreement ? (
+          <SellerAgreementGate />
+        ) : needsOnboarding && connectStatus ? (
           <div className="rounded-3xl border border-brand-border bg-white p-8 shadow-xl shadow-brand-navy/5">
             <div className="flex items-center gap-2">
               <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-surface text-brand-navy">
@@ -81,9 +94,9 @@ export default async function SellPage() {
               </h2>
             </div>
             <p className="mt-2 text-sm text-gray-500">
-              Before anyone can buy from you, Stripe needs to verify where your sale proceeds
-              actually go — a one-time, few-minute setup. We never hold your money ourselves; this
-              is the identity check that lets Stripe pay you directly the moment something sells.
+              Before anyone can buy from you, Stripe needs to verify who you are and where your sale
+              proceeds go — a one-time, few-minute setup. Once an order completes, your earnings are
+              transferred to this Stripe account and you can withdraw them to your bank.
             </p>
             <SellerPayoutsSetup initialStatus={connectStatus} returnPath="/sell" />
           </div>

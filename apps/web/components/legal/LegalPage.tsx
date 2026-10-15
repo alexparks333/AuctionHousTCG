@@ -22,7 +22,7 @@ export default function LegalPage({
 }) {
   return (
     <div className="flex min-h-screen flex-col bg-brand-surface">
-      <Header />
+      <Header hideTermsPrompt />
 
       <section className="relative overflow-hidden bg-gradient-to-br from-brand-navy via-brand-navy-light to-slate-800 text-white">
         <div aria-hidden className="absolute -right-32 -top-40 h-[26rem] w-[26rem] rounded-full bg-brand-gold/15 blur-3xl" />

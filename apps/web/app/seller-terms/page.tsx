@@ -1,15 +1,18 @@
-import Header from "@/components/Header";
-import Footer from "@/components/Footer";
+import Link from "next/link";
+import LegalPage, { type LegalSection } from "@/components/legal/LegalPage";
+import { SELLER_AGREEMENT_EFFECTIVE_DATE } from "@/lib/agreements";
 
-// Linked from the footer's Sell column as "Seller information" and from
-// anywhere else a seller needs the full rulebook in one place, rather than
-// scattered across the Sell wizard, Account Settings, and the tiers page.
-// Numbers here mirror docs/PercentageModel.md (the v2 fee/payout model) and
-// apps/api/internal/seller/tier.go — if either changes, update this page too.
 export const metadata = {
-  title: "Seller Terms of Service | AuctionHous - TCG",
+  title: "Seller Agreement | AuctionHous - TCG",
 };
 
+const SUPPORT_EMAIL = "support@auctionhous.net";
+
+// Numbers mirror docs/PercentageModel.md and apps/api (internal/seller tier
+// rates, order.ShipWindowHours, the ship-strike timers in cmd/worker, the
+// claim window in order/fulfillment.go, the payout flow in internal/payout).
+// Change the code and this page together, and bump SELLER_AGREEMENT_VERSION
+// (lib/agreements.ts + internal/agreement) for any material change.
 const TIER_LADDER = [
   { name: "New", rate: "7.00%", requirement: "0–14 completed orders" },
   { name: "Bronze", rate: "6.50%", requirement: "15–49 completed orders" },
@@ -21,207 +24,277 @@ const TIER_LADDER = [
 
 const LIABILITY = [
   { scenario: "Item wasn't as described", responsible: "Seller" },
-  { scenario: "Buyer says “never arrived,” no tracking exists", responsible: "Seller" },
+  { scenario: "Buyer says it never arrived, and there's no tracking", responsible: "Seller" },
   {
-    scenario: "Buyer says “never arrived,” tracking shows delivered, order under $50",
-    responsible: "Platform (absorbed, not disputed)",
+    scenario: "Buyer says it never arrived, tracking shows delivered, order under $50",
+    responsible: "AuctionHous (absorbed, not disputed)",
   },
-  { scenario: "Same, but order is $50 or more", responsible: "Buyer, after a fraud review" },
-  { scenario: "Payment fraud / stolen card used", responsible: "Platform" },
+  { scenario: "Same, but the order is $50 or more", responsible: "Buyer, after a fraud review" },
+  { scenario: "Payment fraud or a stolen card", responsible: "AuctionHous" },
   { scenario: "Buyer changed their mind", responsible: "Buyer — not covered" },
   {
-    scenario: "Item damaged in transit, seller has adequate packing evidence",
-    responsible: "Platform, up to $100",
+    scenario: "Damaged in transit, and the seller has photos showing adequate packing",
+    responsible: "AuctionHous, up to $100",
   },
 ];
 
-function Section({
-  title,
-  id,
-  children,
-}: {
-  title: string;
-  id?: string;
-  children: React.ReactNode;
-}) {
+function Term({ label }: { label: string }) {
+  return <strong>{label}:</strong>;
+}
+
+function Table({ head, rows }: { head: [string, string, string?]; rows: string[][] }) {
   return (
-    <section id={id} className="mt-10 scroll-mt-24">
-      <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
-      <div className="mt-2 space-y-3 text-sm leading-relaxed text-gray-600">{children}</div>
-    </section>
+    <div className="overflow-x-auto rounded-xl ring-1 ring-brand-border">
+      <table className="w-full text-left text-sm">
+        <thead className="bg-brand-surface text-xs uppercase tracking-wide text-gray-500">
+          <tr>
+            {head.filter(Boolean).map((h) => (
+              <th key={h} className="px-4 py-2 font-medium">
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-brand-border bg-white">
+          {rows.map((r) => (
+            <tr key={r[0]}>
+              {r.map((cell, i) => (
+                <td key={i} className={`px-4 py-2 ${i === 0 ? "font-medium text-gray-900" : "text-gray-600"}`}>
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
-export default function SellerTermsPage() {
+const SECTIONS: LegalSection[] = [
+  {
+    id: "about",
+    title: "About this agreement",
+    body: (
+      <p>
+        This Seller Agreement adds to our <Link href="/terms">Terms of Service</Link> and applies whenever you list
+        an item or stock your Singles Shop. You accept it before you sell for the first time. If it conflicts with
+        the Terms on a selling matter, this agreement wins.
+      </p>
+    ),
+  },
+  {
+    id: "setup",
+    title: "Getting set up",
+    body: (
+      <ul>
+        <li>
+          To get paid, you set up a seller account with our payment processor, Stripe, and agree to the{" "}
+          <a href="https://stripe.com/legal/connect-account" target="_blank" rel="noreferrer">
+            Stripe Connected Account Agreement
+          </a>
+          . Stripe verifies your identity and collects the tax and bank details it needs.
+        </li>
+        <li>Your details must be accurate and kept up to date, including your return address.</li>
+        <li>We may require extra verification, or limit selling, while we or Stripe review your account.</li>
+      </ul>
+    ),
+  },
+  {
+    id: "payments",
+    title: "How you get paid",
+    body: (
+      <>
+        <p>
+          <Term label="We collect payment for you" />{" "}You appoint AuctionHous as your limited agent to receive
+          payments from buyers on your behalf. When a buyer&apos;s payment to AuctionHous succeeds, the buyer has
+          paid you, and the buyer&apos;s obligation to you is complete. We then owe you the sale amount under this
+          agreement.
+        </p>
+        <p>
+          <Term label="When it's released" />{" "}We hold the payment with Stripe while you ship and through the
+          buyer&apos;s claim window: 3 days after delivery, or 7 days for orders of $250 or more. Some higher-tier
+          sellers&apos; orders are released as soon as they&apos;re delivered. Once an order completes, we transfer
+          the sale amount — minus our fee and any shipping label you bought through us — to your Stripe account.
+        </p>
+        <p>
+          <Term label="Withdrawing" />{" "}You choose when to move your balance to your bank from the{" "}
+          <Link href="/account/withdraw">Withdraw</Link> page: a standard transfer (free, about 1–2 business days)
+          or an instant transfer (2% fee, usually within about 30 minutes). Your very first payout may be held
+          briefly while Stripe finishes verifying your account.
+        </p>
+        <p>
+          <Term label="Refunds and holds" />{" "}If a buyer&apos;s claim is decided in their favor before release,
+          the held payment is refunded instead. We may hold or deduct amounts you owe — refunds, chargebacks you
+          are responsible for, fees, or label costs — from current or future sales. Held payments don&apos;t earn
+          interest.
+        </p>
+      </>
+    ),
+  },
+  {
+    id: "fees",
+    title: "Fees and seller tiers",
+    body: (
+      <>
+        <p>
+          Each completed sale is charged <strong>$0.30</strong> plus a percentage of the item price and shipping
+          (never sales tax), set by your seller tier. There&apos;s no listing fee.
+        </p>
+        <Table
+          head={["Tier", "Rate", "Reached at"]}
+          rows={TIER_LADDER.map((t) => [
+            t.name,
+            t.rate === "Custom" ? "Negotiated" : `${t.rate} + $0.30`,
+            t.requirement,
+          ])}
+        />
+        <p>
+          Your tier is worked out automatically from your completed orders, reviews and dispute rate — see the{" "}
+          <Link href="/tiers">fees page</Link>. Cancelled and refunded orders never count toward promotion. A dispute
+          rate above 4% over the last 90 days drops you one tier, with a 30-day wait before you can move back up.
+          If a buyer pays by bank and gets a discount, that comes out of our fee, never your proceeds.
+        </p>
+      </>
+    ),
+  },
+  {
+    id: "listings",
+    title: "Listing standards",
+    body: (
+      <ul>
+        <li>Only list items you own and have in hand, ready to ship.</li>
+        <li>
+          Condition and grade must be accurate. Describe the flaws you can see, not just the ones you think matter
+          — condition is the most common reason for claims.
+        </li>
+        <li>Photos must be of the actual card or slab you&apos;re selling, not a stock image or another copy.</li>
+        <li>
+          For a graded slab, the grading company, grade and cert number must match the slab exactly. We may remove
+          a listing whose cert number doesn&apos;t check out.
+        </li>
+        <li>Game, set, card number and condition must be filled in accurately.</li>
+      </ul>
+    ),
+  },
+  {
+    id: "singles",
+    title: "Your Singles Shop",
+    body: (
+      <ul>
+        <li>
+          Singles Shop prices are set by AuctionHous from market prices, so every copy of a card in the same
+          condition and finish costs the same in every shop. You set the quantity only.
+        </li>
+        <li>Only Commons, Uncommons and Rares in Near Mint, Lightly Played or Moderately Played condition can be stocked.</li>
+        <li>
+          Keep your stock accurate. Singles a buyer adds to an order ship together with that order, under the same
+          deadlines.
+        </li>
+      </ul>
+    ),
+  },
+  {
+    id: "shipping",
+    title: "Shipping",
+    body: (
+      <ul>
+        <li>
+          <Term label="Ship within 96 hours" />{" "}Ship every order with tracking within 96 hours of payment. You can
+          request one extension. An order that isn&apos;t shipped in time is cancelled and refunded automatically.
+        </li>
+        <li>
+          <Term label="Missed deadlines" />{" "}A second missed ship deadline within 30 days suspends your selling for
+          7 days.
+        </li>
+        <li>
+          <Term label="Labels" />{" "}Labels bought through AuctionHous are tracked, and their cost is deducted from
+          the sale. Tracked envelope labels can&apos;t be refunded once bought, so check your return address first.
+        </li>
+        <li>
+          <Term label="Free shipping and bundles" />{" "}If you offer free shipping, you pay the label. If a buyer adds
+          enough singles that the order needs a package instead of an envelope, the buyer pays the package rate.
+        </li>
+        <li>Pack cards so they arrive in the condition you described — sleeved, and protected against bending.</li>
+      </ul>
+    ),
+  },
+  {
+    id: "disputes",
+    title: "Claims, and who's responsible",
+    body: (
+      <>
+        <p>
+          We don&apos;t offer unconditional buyer protection — at our fee levels it can&apos;t be funded — so
+          responsibility is assigned plainly:
+        </p>
+        <Table head={["What happened", "Who's responsible"]} rows={LIABILITY.map((r) => [r.scenario, r.responsible])} />
+        <p>
+          When a buyer opens a claim, you have 48 hours to work it out with them — often with a partial refund
+          rather than a return. After that it&apos;s escalated and we decide it, and either side may appeal once.
+          Claims affect your tier through your dispute rate whatever the outcome.
+        </p>
+      </>
+    ),
+  },
+  {
+    id: "taxes",
+    title: "Taxes",
+    body: (
+      <p>
+        You&apos;re responsible for the income tax on your sales. Where the law requires a marketplace to collect
+        sales tax, we&apos;ll collect it from buyers at checkout. Stripe may send you, and the IRS, a Form 1099-K for
+        your sales when you meet the reporting thresholds.
+      </p>
+    ),
+  },
+  {
+    id: "conduct",
+    title: "Prohibited items and conduct",
+    body: (
+      <>
+        <ul>
+          <li>Counterfeit cards, counterfeit slabs, or slabs with tampered or resealed holders.</li>
+          <li>Listings priced or described to mislead a buyer about condition, grade or authenticity.</li>
+          <li>Moving a sale off AuctionHous to avoid fees.</li>
+          <li>
+            Gaming your order count, reviews or dispute rate — including buying from yourself with other accounts.
+          </li>
+        </ul>
+        <p>
+          Breaking these rules can lead to listing removal, a tier drop, or suspension. We&apos;ll tell you the
+          specific reason, not a generic notice.
+        </p>
+      </>
+    ),
+  },
+  {
+    id: "changes",
+    title: "Changes to this agreement",
+    body: (
+      <p>
+        We may update this agreement as fees and payout rules change. For a material change — a higher fee, a new
+        tier threshold, or a change to who&apos;s responsible in a claim — we&apos;ll ask you to accept the new
+        version before your next listing, and it won&apos;t apply to sales already in progress. Questions? Email{" "}
+        <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>.
+      </p>
+    ),
+  },
+];
+
+export default function SellerAgreementPage() {
   return (
-    <div className="flex min-h-screen flex-col bg-brand-surface">
-      <Header />
-      <main className="mx-auto w-full max-w-3xl flex-1 px-10 py-16 sm:px-12 lg:px-14">
-        <h1 className="text-2xl font-bold text-gray-900">Seller Terms of Service</h1>
-        <p className="mt-2 text-sm text-gray-600">
-          This page covers the rules specific to selling on AuctionHous - TCG — fees, payouts,
-          listing standards, and what happens when something goes wrong. It supplements, and doesn&apos;t
-          replace, the general site Terms every account agrees to. By creating a listing, you agree
-          to everything below.
+    <LegalPage
+      eyebrow="Legal · For sellers"
+      title="Seller Agreement"
+      effectiveDate={SELLER_AGREEMENT_EFFECTIVE_DATE}
+      intro={
+        <p>
+          How selling on AuctionHous works: getting paid, fees, shipping deadlines, and what happens when a buyer
+          opens a claim.
         </p>
-
-        <Section title="1. Who you're selling as">
-          <p>
-            Every charge on AuctionHous - TCG is a Stripe Connect direct charge: a buyer&apos;s payment
-            goes straight into <em>your</em> Stripe account the instant it succeeds, not into a
-            platform-held balance. That makes you the merchant of record for your own sales. Before
-            your first listing goes live, Stripe verifies your identity (a one-time onboarding flow
-            linked from the Sell page or Account Settings) so it knows where to send your money.
-          </p>
-          <p>
-            We never hold your funds. What we control is <em>timing</em> — when Stripe pays out
-            money that&apos;s already yours from your Stripe balance into your bank account, not whether
-            you get it.
-          </p>
-        </Section>
-
-        <Section title="2. Fees">
-          <p>
-            Every completed sale is charged a flat <strong>$0.30</strong> plus a percentage of the
-            item price and shipping (never sales tax), set by your seller tier below. There&apos;s no
-            minimum-order exemption — the same formula applies whether the item is $2 or $2,000.
-          </p>
-          <div className="mt-3 overflow-hidden rounded-xl ring-1 ring-brand-border">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-white text-xs uppercase tracking-wide text-gray-500">
-                <tr>
-                  <th className="px-4 py-2 font-medium">Tier</th>
-                  <th className="px-4 py-2 font-medium">Rate</th>
-                  <th className="px-4 py-2 font-medium">Reached at</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-brand-border bg-white">
-                {TIER_LADDER.map((t) => (
-                  <tr key={t.name}>
-                    <td className="px-4 py-2 font-medium text-gray-900">{t.name}</td>
-                    <td className="px-4 py-2">{t.rate === "Custom" ? "Negotiated" : `${t.rate} + $0.30`}</td>
-                    <td className="px-4 py-2 text-gray-500">{t.requirement}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p>
-            Tier is based on your trailing completed-order history and dispute rate, not something
-            you apply for — see the full breakdown on the{" "}
-            <a href="/tiers" className="font-medium text-brand-navy underline hover:text-brand-gold">
-              seller fees page
-            </a>
-            . A trailing 90-day dispute rate above 4% drops you one tier, with a 30-day cooldown
-            before you can re-promote; cancelled or refunded orders never count toward promotion.
-          </p>
-          <p>
-            Your net proceeds are the same no matter how the buyer pays — if a buyer chooses the
-            discounted bank-transfer option, that discount comes out of platform margin, never out
-            of what you&apos;re paid.
-          </p>
-        </Section>
-
-        <Section title="3. Getting paid">
-          <p>
-            Payouts are batched weekly by default. You can opt into per-order or instant payouts from
-            Account Settings; instant payout carries an additional cost since Stripe charges us for
-            it. Gold and Hous Trust sellers skip the standard claim-window wait entirely — payout
-            releases the moment the carrier scans your package as delivered, instead of waiting out
-            the standard hold.
-          </p>
-          <p>
-            First-time sellers should expect a short hold on their very first payout while Stripe
-            finishes verifying the connected account — this is a one-time identity-verification
-            step, not a recurring delay.
-          </p>
-        </Section>
-
-        <Section title="4. Listing standards">
-          <ul className="list-disc space-y-1.5 pl-5">
-            <li>Condition and grade must be accurate. This is the single highest-weighted factor in your feedback score and the most common source of disputes — describe flaws you can see, not just the ones you think matter.</li>
-            <li>Graded slabs require a real, verifiable cert number from PSA, BGS, or CGC. Listings with cert numbers that don&apos;t verify against the grading company&apos;s own lookup will be removed.</li>
-            <li>Photos must be of the actual card or slab being sold, not a stock image or a photo of a different copy.</li>
-            <li>Required item specifics (game, set, card number, and condition or grade) must be filled in accurately — this is also what makes your listing findable in search and filters.</li>
-          </ul>
-        </Section>
-
-        <Section title="5. Shipping">
-          <p>
-            Items $20 and over require tracked shipping. Items under $20 may ship tracked or via
-            Plain White Envelope with basic tracking. Ship within your stated handling time —
-            late or untracked shipping on a disputed order shifts liability toward you (see §7
-            below).
-          </p>
-        </Section>
-
-        <Section title="6. Prohibited items and conduct">
-          <ul className="list-disc space-y-1.5 pl-5">
-            <li>Counterfeit cards, counterfeit slabs, or slabs with tampered or resealed holders.</li>
-            <li>Listings priced or described to intentionally mislead a buyer about condition, grade, or authenticity.</li>
-            <li>Attempting to move a transaction off-platform to avoid fees.</li>
-            <li>Manipulating your own dispute rate or order count — including self-dealing across buyer accounts you control — to game tier promotion.</li>
-          </ul>
-          <p>
-            Violations can result in listing removal, tier demotion, or account suspension, depending
-            on severity.
-          </p>
-        </Section>
-
-        <Section id="disputes" title="7. Disputes and who's on the hook">
-          <p>
-            We don&apos;t offer unconditional buyer protection — at our fee levels that can&apos;t be
-            funded, so responsibility is assigned plainly instead of left ambiguous:
-          </p>
-          <div className="mt-3 overflow-hidden rounded-xl ring-1 ring-brand-border">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-white text-xs uppercase tracking-wide text-gray-500">
-                <tr>
-                  <th className="px-4 py-2 font-medium">What happened</th>
-                  <th className="px-4 py-2 font-medium">Who&apos;s responsible</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-brand-border bg-white">
-                {LIABILITY.map((row) => (
-                  <tr key={row.scenario}>
-                    <td className="px-4 py-2 text-gray-900">{row.scenario}</td>
-                    <td className="px-4 py-2 text-gray-500">{row.responsible}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p>
-            Most condition disputes can be closed with a partial refund you propose directly to the
-            buyer, without escalating to a full return. Repeated disputes affect your tier
-            regardless of outcome, since tier reflects dispute <em>rate</em>, not fault.
-          </p>
-        </Section>
-
-        <Section title="8. Account suspension">
-          <p>
-            We can suspend listing privileges pending review if your account shows a pattern of
-            disputes, a counterfeit-item finding, or repeated listing-standards violations. You&apos;ll
-            be told the specific reason, not a generic notice — the same standard we hold tier
-            demotions to.
-          </p>
-        </Section>
-
-        <Section title="9. Changes to these terms">
-          <p>
-            We may update this page as the fee model or payout mechanics change. Material changes
-            (a fee increase, a new tier threshold, a change to dispute liability) will be
-            communicated before they apply to sales already in progress.
-          </p>
-        </Section>
-
-        <p className="mt-10 border-t border-brand-border pt-6 text-xs text-gray-400">
-          Questions about a specific fee, payout, or dispute? Reach out through your account&apos;s
-          support contact rather than relying on this page alone — it describes the general
-          rules, not your specific case.
-        </p>
-      </main>
-      <Footer />
-    </div>
+      }
+      sections={SECTIONS}
+    />
   );
 }

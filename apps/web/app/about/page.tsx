@@ -17,8 +17,8 @@ const POINTS = [
   },
   {
     icon: Landmark,
-    title: "Paid straight to the seller",
-    body: "Payments go directly into the seller's own Stripe account. We never hold anyone's money.",
+    title: "Protected payments",
+    body: "Buyers pay through Stripe, and the seller is paid once the order arrives as described — so both sides are covered if something goes wrong.",
   },
   {
     icon: Truck,

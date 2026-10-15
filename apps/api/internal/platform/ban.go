@@ -32,7 +32,11 @@ import (
 // rejecting unauthenticated requests is RequireAuth's job, not this
 // guard's; this guard only ever adds a 403 on top of an otherwise-valid,
 // identified, banned caller.
-func WithBanGuard(pool *pgxpool.Pool, verifier *AuthVerifier, next http.Handler) http.Handler {
+//
+// It also refuses writes from anyone who hasn't accepted termsVersion of the
+// Terms of Service (internal/agreement), apart from the few routes needed to
+// accept them, pick a username, or delete the account.
+func WithBanGuard(pool *pgxpool.Pool, verifier *AuthVerifier, termsVersion string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
 			next.ServeHTTP(w, r)
@@ -48,15 +52,17 @@ func WithBanGuard(pool *pgxpool.Pool, verifier *AuthVerifier, next http.Handler)
 		// deleted also covers a deleted account whose login token hasn't
 		// expired yet (internal/user.DeleteAccount) — it can't change
 		// anything in the short window before the token runs out.
-		var banned, deleted bool
+		var banned, deleted, acceptedTerms bool
 		err := pool.QueryRow(r.Context(),
 			`select
 				exists(
 					select 1 from account_suspensions
 					where user_id = $1 and reason in ('chargeback_fraud', 'ban_evasion') and now() < ends_at
 				),
-				exists(select 1 from users where id = $1 and deleted_at is not null)`, userID,
-		).Scan(&banned, &deleted)
+				exists(select 1 from users where id = $1 and deleted_at is not null),
+				exists(select 1 from agreement_acceptances where user_id = $1 and document = 'terms' and version = $2)`,
+			userID, termsVersion,
+		).Scan(&banned, &deleted, &acceptedTerms)
 		if err != nil {
 			// Fail open on a DB error here — this guard is a fraud
 			// deterrent layered on top of normal request handling, not
@@ -73,7 +79,18 @@ func WithBanGuard(pool *pgxpool.Pool, verifier *AuthVerifier, next http.Handler)
 			http.Error(w, "this account is permanently banned for violating our chargeback and account-integrity policies", http.StatusForbidden)
 			return
 		}
+		if !acceptedTerms && !termsExempt[r.URL.Path] {
+			http.Error(w, "please accept the Terms of Service to continue", http.StatusForbidden)
+			return
+		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// termsExempt are the writes someone may make before accepting the Terms.
+var termsExempt = map[string]bool{
+	"/me/agreements":     true,
+	"/me/username":       true,
+	"/me/delete-account": true,
 }

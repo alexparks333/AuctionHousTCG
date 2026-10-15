@@ -9,10 +9,10 @@ import {
 } from "@/lib/api";
 
 // "Set up payouts" in Account Settings — Stripe Connect Express onboarding
-// (design doc v2 §5.1/§7). Money from a sale goes straight into the
-// seller's OWN Stripe balance the moment a direct charge succeeds; this
-// isn't a platform-held wallet or deposit of any kind, it's identity
-// verification so Stripe knows who to pay. Deliberately separate from
+// (design doc v2 §5.1/§7). Buyers pay the platform (separate charges and
+// transfers, internal/payment); a completed order's proceeds are then
+// transferred into this connected account. This step is the identity
+// verification Stripe needs before it can receive those transfers. Deliberately separate from
 // SavedCardsManager above — that's a buyer's saved-card identity, this is
 // a seller's merchant identity, and the same person can be both.
 //
