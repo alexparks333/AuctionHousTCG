@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -87,7 +86,7 @@ func DevAdvance(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.
 			return nil, err
 		}
 	case StateClaimWindow:
-		if err := devReleaseClaimWindow(ctx, pool, paymentClient, orderID); err != nil {
+		if err := ReleaseClaimWindow(ctx, pool, paymentClient, orderID); err != nil {
 			return nil, err
 		}
 	default:
@@ -95,41 +94,4 @@ func DevAdvance(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.
 	}
 
 	return GetByID(ctx, pool, orderID)
-}
-
-// devReleaseClaimWindow mimics cmd/worker's releaseElapsedClaimWindows for
-// exactly one order, on demand instead of waiting for claim_deadline to
-// actually pass — same chargeback guard, same released_at stamp, same
-// best-effort ReleaseFunds call (a failed transfer here must never make
-// this dev button look broken; the state transition already succeeded
-// regardless). Inlined rather than shared with the worker (package main,
-// can't be imported here) or with internal/chargeback (which already
-// imports this package, so the reverse import would cycle) — same
-// tradeoff MarkDelivered's own inline chargeback check already makes.
-func devReleaseClaimWindow(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, orderID string) error {
-	if err := Transition(ctx, pool, orderID, StateClaimWindow, StateReleased); err != nil {
-		return err
-	}
-	if _, err := pool.Exec(ctx, `update orders set released_at = now() where id = $1`, orderID); err != nil {
-		return fmt.Errorf("stamp released_at: %w", err)
-	}
-
-	var blocked bool
-	if err := pool.QueryRow(ctx, `
-		select exists(
-			select 1 from chargebacks
-			where order_id = $1 and status not in ('won', 'warning_closed', 'prevented')
-		)
-	`, orderID).Scan(&blocked); err != nil {
-		return fmt.Errorf("check chargeback status: %w", err)
-	}
-	if blocked {
-		log.Printf("order: order %s has a pending or lost chargeback — withholding dev-advance payout", orderID)
-		return nil
-	}
-
-	if err := ReleaseFunds(ctx, pool, paymentClient, orderID); err != nil {
-		log.Printf("order: dev-advance failed to release funds for order %s: %v", orderID, err)
-	}
-	return nil
 }

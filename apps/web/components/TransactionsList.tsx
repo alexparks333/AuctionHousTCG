@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -20,6 +21,8 @@ import { formatRelativeTime } from "@/lib/format";
 import TransactionStepper from "@/components/TransactionStepper";
 import ModeButton from "@/components/ModeButton";
 import PrintLabelButton from "@/components/PrintLabelButton";
+import ClaimWindowCountdown from "@/components/ClaimWindowCountdown";
+import BundleTagPreview from "@/components/BundleTagPreview";
 
 type Mode = "purchased" | "sold";
 
@@ -130,10 +133,13 @@ export default function TransactionsList({ orders: initialOrders }: { orders: Or
                 }`}
               >
                 {order.listingImageUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
+                  // next/image so a 56px thumbnail downloads a ~112px file,
+                  // not the full-size original.
+                  <Image
                     src={order.listingImageUrl}
                     alt=""
+                    width={56}
+                    height={56}
                     className="h-14 w-14 shrink-0 rounded-lg object-cover"
                   />
                 ) : (
@@ -141,13 +147,16 @@ export default function TransactionsList({ orders: initialOrders }: { orders: Or
                 )}
 
                 <div className="min-w-0 flex-1">
-                  <Link
-                    href={href}
-                    onClick={(e) => e.stopPropagation()}
-                    className="block truncate font-medium text-gray-900 hover:underline"
-                  >
-                    {order.listingTitle}
-                  </Link>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Link
+                      href={href}
+                      onClick={(e) => e.stopPropagation()}
+                      className="truncate font-medium text-gray-900 hover:underline"
+                    >
+                      {order.listingTitle}
+                    </Link>
+                    {order.bundleCardCount > 0 && <BundleTagPreview listingId={order.listingId} />}
+                  </div>
                   <p className="truncate text-xs text-gray-500">
                     {roleLabel}{" "}
                     {order.counterpartyUsername ? (
@@ -162,13 +171,24 @@ export default function TransactionsList({ orders: initialOrders }: { orders: Or
                       "them"
                     )}{" "}
                     · <span className="font-semibold text-gray-700">{formatPrice(amountCents)}</span>
+                    {order.bundleCardCount > 0 && (
+                      <>
+                        {" "}
+                        · {order.bundleCardCount} {order.bundleCardCount === 1 ? "card" : "cards"} added
+                      </>
+                    )}
                   </p>
                 </div>
 
                 <div className="flex shrink-0 flex-col items-end gap-1.5 text-right">
-                  <p className="flex items-center justify-end gap-1 text-sm font-semibold" style={{ color: status.accent }}>
-                    <StatusIcon size={14} />
-                    {status.label}
+                  <p className="flex items-center justify-end gap-2 text-sm font-semibold" style={{ color: status.accent }}>
+                    {order.state === "claim_window" && order.claimDeadline && (
+                      <ClaimWindowCountdown deadline={order.claimDeadline} />
+                    )}
+                    <span className="flex items-center gap-1">
+                      <StatusIcon size={14} />
+                      {status.label}
+                    </span>
                   </p>
                   {/* Date.now()-based text — see ThreadListItem's matching
                       comment for why this needs suppressHydrationWarning,
@@ -213,7 +233,9 @@ export default function TransactionsList({ orders: initialOrders }: { orders: Or
                     buyerUsername={order.buyerUsername}
                     viewerIsSeller={order.viewerIsSeller}
                     state={order.state}
+                    rail={order.rail}
                     createdAt={order.createdAt}
+                    claimDeadline={order.claimDeadline}
                     actionHref={href}
                     onAdvanced={(updated) =>
                       setOrders((prev) =>

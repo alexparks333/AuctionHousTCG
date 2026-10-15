@@ -57,6 +57,14 @@ export default function ShippingAddressGate({ children }: { children: ReactNode 
   const [saveError, setSaveError] = useState("");
   const [verifyStatus, setVerifyStatus] = useState<VerifyStatus>({ state: "idle" });
   const [acknowledged, setAcknowledged] = useState(false);
+  // fraudAcknowledged is the CSFloat-style checkout-time acknowledgment
+  // (Plan B / CLAUDE.md §7's chargeback-fraud ban system) — a second,
+  // independent checkbox alongside the address one above. Both must be
+  // checked before "Continue to payment" enables; this one's value is what
+  // every buyNow() call site downstream passes as fraudPolicyAcknowledged,
+  // since by the time {children} ever renders (the `confirmed` branch
+  // below), both checkboxes are already true.
+  const [fraudAcknowledged, setFraudAcknowledged] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
 
   useEffect(() => {
@@ -347,10 +355,20 @@ export default function ShippingAddressGate({ children }: { children: ReactNode 
             I confirm this shipping address is correct. If it&apos;s wrong, I&apos;m responsible for any cost to
             fix it after I&apos;ve paid.
           </label>
+          <label className="mt-2 flex items-start gap-2 text-xs text-gray-700">
+            <input
+              type="checkbox"
+              checked={fraudAcknowledged}
+              onChange={(e) => setFraudAcknowledged(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-brand-navy focus:ring-brand-navy"
+            />
+            I understand that if I receive this item and reverse the charge through my bank instead of
+            filing a claim, I will be permanently banned from AuctionHous.
+          </label>
           <button
             type="button"
             onClick={() => setConfirmed(true)}
-            disabled={!acknowledged}
+            disabled={!acknowledged || !fraudAcknowledged}
             className="mt-3 w-full rounded-lg bg-brand-navy px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-brand-navy/90 disabled:opacity-60"
           >
             Continue to payment

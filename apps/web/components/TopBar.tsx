@@ -39,10 +39,10 @@ export default function TopBar({ tier = null }: { tier?: Listing["sellerTier"] |
           , every order payment protected.
         </span>
         <div className="flex items-center gap-4">
-          <Link href="#" className="hover:text-white">
+          <Link href="/support" className="hover:text-white">
             Help &amp; Support
           </Link>
-          <Link href="#" className="hover:text-white">
+          <Link href="/sell" className="hover:text-white">
             Sell on AuctionHous
           </Link>
         </div>

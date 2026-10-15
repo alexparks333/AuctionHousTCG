@@ -5,13 +5,16 @@ import type { OrderState } from "./api";
 // per-row stepper on the Transactions list (TransactionStepper) — one
 // source of truth for step order/labels so the two views can never drift
 // apart.
+//
+// There's deliberately no "Awaiting shipment" step (product decision): an
+// order waiting to ship is shown as Paid done and Shipped in progress
+// (currentStepIndex), rather than as a step of its own.
 export const ORDER_STEPS: { state: OrderState; label: string }[] = [
   { state: "paid", label: "Paid" },
-  { state: "awaiting_ship", label: "Awaiting shipment" },
   { state: "shipped", label: "Shipped" },
   { state: "delivered", label: "Delivered" },
   { state: "claim_window", label: "Claim window" },
-  { state: "released", label: "Released to seller" },
+  { state: "released", label: "Release to seller" },
 ];
 
 // created/payment_pending both precede real payment completion (design doc
@@ -25,10 +28,31 @@ export const ORDER_STEPS: { state: OrderState; label: string }[] = [
 const STEP_ALIASES: Partial<Record<OrderState, OrderState>> = {
   created: "paid",
   payment_pending: "paid",
+  // Paid, not shipped yet — the last step actually reached is Paid.
+  awaiting_ship: "paid",
 };
 
+// The last step this order has actually reached — what the order page's
+// checklist (OrderStatusPanel) ticks off up to.
 export function stepIndexForState(state: OrderState): number {
   return ORDER_STEPS.findIndex((s) => s.state === (STEP_ALIASES[state] ?? state));
+}
+
+// The step the Transactions stepper marks in progress (gold dots): the one
+// the order is waiting on. Paid and waiting to ship -> Shipped; in transit
+// -> Delivered; the claim window running -> Claim window. An unpaid order
+// waits on Paid itself.
+const CURRENT_STEP: Partial<Record<OrderState, OrderState>> = {
+  created: "paid",
+  payment_pending: "paid",
+  paid: "shipped",
+  awaiting_ship: "shipped",
+  shipped: "delivered",
+  delivered: "claim_window",
+};
+
+export function currentStepIndex(state: OrderState): number {
+  return ORDER_STEPS.findIndex((s) => s.state === (CURRENT_STEP[state] ?? state));
 }
 
 // A terminal state (refunded/cancelled) or claim_open falls outside the

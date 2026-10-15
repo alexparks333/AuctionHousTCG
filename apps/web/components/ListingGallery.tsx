@@ -20,6 +20,10 @@ const CAROUSEL_SHIFT_PCT = 35;
 // Falls back to the gradient placeholder only for listings with no photos
 // (shouldn't happen for anything created after CLAUDE.md §6.13, since the
 // Sell wizard requires at least front+back — this is just a safety net).
+// The listing page's big photo — full detail is the point here (buyers zoom
+// in on corners and edges), so it gets the full width it's shown at.
+const MAIN_PHOTO_SIZES = "(max-width: 768px) 100vw, 700px";
+
 export default function ListingGallery({
   listingId,
   imageUrls,
@@ -108,7 +112,7 @@ export default function ListingGallery({
                   : "border-transparent hover:border-brand-border"
               }`}
             >
-              <Image src={url} alt={`${title} photo ${i + 1}`} fill className="object-cover" />
+              <Image src={url} alt={`${title} photo ${i + 1}`} fill sizes="80px" className="object-cover" />
             </button>
           ))
         ) : (
@@ -136,12 +140,12 @@ export default function ListingGallery({
                   pointerEvents: "none",
                 }}
               >
-                <Image src={url} alt={`${title} photo ${i + 1}`} fill className="object-cover" />
+                <Image src={url} alt={`${title} photo ${i + 1}`} fill sizes={MAIN_PHOTO_SIZES} className="object-cover" />
               </div>
             );
           })
         ) : hasPhotos ? (
-          <Image src={imageUrls[0]} alt={title} fill className="object-cover" />
+          <Image src={imageUrls[0]} alt={title} fill sizes={MAIN_PHOTO_SIZES} className="object-cover" />
         ) : (
           <CardArt game={game} label={title} />
         )}

@@ -69,6 +69,7 @@ function OfferBubble({
   useEffect(() => {
     const resolved = outcomeFromStatus(offer.status);
     if (resolved !== null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs the bubble to an offer resolved elsewhere (from polling)
       setOutcome(resolved);
     }
   }, [offer.status]);
@@ -196,7 +197,12 @@ function OfferBubble({
             outcome === "declined" ? "grayscale opacity-40" : ""
           }`}
         >
-          <ListingImage src={offer.listingImageUrl} game={offer.listingGame} label={offer.listingTitle} />
+          <ListingImage
+            src={offer.listingImageUrl}
+            game={offer.listingGame}
+            label={offer.listingTitle}
+            sizes="72px"
+          />
         </div>
         {outcome && (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center overflow-hidden">
@@ -257,27 +263,37 @@ export default function ThreadView({
   }
 
   return (
-    <div className="flex h-full min-w-0 flex-1 flex-col">
-      <div className="flex items-center gap-3 border-b border-brand-border px-4 py-3">
+    <div className="flex h-full min-w-0 flex-1 flex-col bg-gradient-to-b from-brand-surface/40 to-brand-surface/80">
+      <div className="flex shrink-0 items-center gap-3 border-b border-brand-border bg-white px-4 py-3">
         <button
           type="button"
           onClick={onBack}
           aria-label="Back to conversations"
-          className="rounded-md p-1 text-gray-500 hover:bg-brand-surface md:hidden"
+          className="rounded-full p-1.5 text-gray-500 hover:bg-brand-surface md:hidden"
         >
           <ArrowLeft size={18} />
         </button>
-        <Avatar label={name} size={36} />
+        <span className="rounded-full p-0.5 ring-2 ring-brand-gold/40">
+          <Avatar label={name} size={38} />
+        </span>
         <div className="min-w-0 flex-1">
           {detail.counterpart.username ? (
             <Link
               href={`/seller/${detail.counterpart.username}`}
-              className="truncate text-sm font-semibold text-gray-900 hover:underline"
+              className="block truncate text-sm font-bold text-gray-900 hover:underline"
             >
               {name}
             </Link>
           ) : (
-            <p className="truncate text-sm font-semibold text-gray-900">{name}</p>
+            <p className="truncate text-sm font-bold text-gray-900">{name}</p>
+          )}
+          {detail.counterpart.username && (
+            <Link
+              href={`/seller/${detail.counterpart.username}`}
+              className="text-xs text-gray-400 hover:text-brand-navy"
+            >
+              View profile
+            </Link>
           )}
         </div>
       </div>
@@ -285,9 +301,9 @@ export default function ThreadView({
       {detail.listing && (
         <Link
           href={`/listing/${detail.listing.id}`}
-          className="flex items-center gap-2.5 border-b border-brand-border bg-brand-surface px-4 py-2 text-xs text-gray-600 hover:bg-brand-border/40"
+          className="mx-4 mt-3 flex shrink-0 items-center gap-2.5 rounded-xl bg-white px-3 py-2 text-xs text-gray-600 shadow-sm ring-1 ring-brand-border transition-colors hover:ring-brand-gold/50"
         >
-          <div className="relative aspect-[5/7] w-6 shrink-0 overflow-hidden rounded">
+          <div className="relative aspect-[5/7] w-7 shrink-0 overflow-hidden rounded-md">
             {/* game is only optional in the shared type because
                 ThreadSummary reuses it without populating it —
                 GetThreadDetail (the only source for this specific field)
@@ -297,11 +313,14 @@ export default function ThreadView({
               src={detail.listing.imageUrl}
               game={detail.listing.game ?? "Pokémon"}
               label={detail.listing.title}
+              sizes="32px"
             />
           </div>
-          <span className="truncate">
-            About: <span className="font-medium text-gray-800">{detail.listing.title}</span>
+          <span className="min-w-0 flex-1 truncate">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">About</span>{" "}
+            <span className="font-semibold text-gray-800">{detail.listing.title}</span>
           </span>
+          <span className="shrink-0 text-[11px] font-semibold text-brand-navy">View listing →</span>
         </Link>
       )}
 
@@ -310,7 +329,7 @@ export default function ThreadView({
           instead of shrinking to it and scrolling — the actual mechanism
           that makes this list scroll internally within MessagesApp's fixed-
           height box rather than pushing that box (and the page) taller. */}
-      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-4">
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4 sm:px-6">
         {detail.messages.map((m) => {
           const mine = m.senderId === currentUserId;
           return (
@@ -325,10 +344,10 @@ export default function ThreadView({
                   />
                 ) : (
                   <div
-                    className={`whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-sm ${
+                    className={`whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm ${
                       mine
-                        ? "rounded-br-sm bg-brand-navy text-white"
-                        : "rounded-bl-sm bg-brand-surface text-gray-800"
+                        ? "rounded-br-md bg-gradient-to-br from-brand-navy to-brand-navy-light text-white"
+                        : "rounded-bl-md bg-white text-gray-800 ring-1 ring-brand-border"
                     }`}
                   >
                     {m.body}
@@ -337,7 +356,7 @@ export default function ThreadView({
                 {/* Date.now()-based text — see ThreadListItem's matching
                     comment for why this needs suppressHydrationWarning, not
                     a fix elsewhere. */}
-                <span className="mt-0.5 px-1 text-[11px] text-gray-400" suppressHydrationWarning>
+                <span className="mt-1 px-1.5 text-[10px] font-medium text-gray-400" suppressHydrationWarning>
                   {formatRelativeTime(m.createdAt)}
                 </span>
               </div>
@@ -347,9 +366,9 @@ export default function ThreadView({
         <div ref={bottomRef} />
       </div>
 
-      <div className="border-t border-brand-border p-3">
+      <div className="shrink-0 border-t border-brand-border bg-white p-3 sm:px-4">
         {error && <p className="mb-1.5 text-xs text-brand-urgent">{error}</p>}
-        <div className="flex items-end gap-2">
+        <div className="flex items-end gap-2 rounded-2xl border border-gray-200 bg-brand-surface/60 p-1.5 pl-2 transition focus-within:border-brand-navy focus-within:bg-white focus-within:ring-4 focus-within:ring-brand-navy/10">
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -361,14 +380,14 @@ export default function ThreadView({
             }}
             placeholder={`Message ${name}...`}
             rows={1}
-            className="max-h-32 flex-1 resize-none rounded-xl border border-brand-border px-3.5 py-2.5 text-sm outline-none focus:border-brand-navy"
+            className="max-h-32 flex-1 resize-none bg-transparent px-2 py-2 text-sm outline-none placeholder:text-gray-400"
           />
           <button
             type="button"
             onClick={handleSend}
             disabled={!draft.trim() || sending}
             aria-label="Send message"
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-navy text-white transition-colors hover:bg-brand-navy-light disabled:opacity-40"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-gold text-white shadow-md shadow-brand-gold/25 transition-all hover:bg-brand-gold-light disabled:bg-gray-300 disabled:shadow-none"
           >
             <Send size={16} />
           </button>

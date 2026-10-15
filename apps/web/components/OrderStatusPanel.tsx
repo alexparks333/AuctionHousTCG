@@ -15,6 +15,7 @@ import {
 import { uploadOrderEvidence } from "@/lib/storage";
 import { ORDER_STEPS, ORDER_OFF_PATH_LABELS, stepIndexForState } from "@/lib/orderSteps";
 import ShippingLabelControl, { isShippingLabelVisible } from "./ShippingLabelControl";
+import ShipExtensionButton from "./ShipExtensionButton";
 
 // The real state-machine-driven order-status view (design doc v2 §5) —
 // replaces the old "shipping isn't wired up yet" placeholder. Renders
@@ -89,6 +90,9 @@ export default function OrderStatusPanel({
 
       {viewerIsSeller && order.state === "awaiting_ship" && (
         <SellerFulfillment order={order} onShipped={setOrder} />
+      )}
+      {viewerIsSeller && order.state === "awaiting_ship" && !order.shipExtensionUsedAt && (
+        <ShipExtensionButton order={order} onExtended={setOrder} />
       )}
       {!viewerIsSeller && order.state === "delivered" && (
         <ArrivalPhotoPrompt orderId={order.id} listingId={order.listingId} />

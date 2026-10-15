@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import type { Listing, MyBid } from "@/lib/types";
 import ListingCard from "./ListingCard";
 import ListingRow from "./ListingRow";
@@ -16,6 +15,7 @@ export default function ListingSection({
   currentUserId,
   myBidsByListingId,
   layout = "grid",
+  headerless = false,
 }: {
   id?: string;
   title: string;
@@ -31,6 +31,8 @@ export default function ListingSection({
   // one per line) — used only for search results. Everywhere else
   // (homepage sections, "More from this seller") stays the card grid.
   layout?: "grid" | "row";
+  // Off when the caller draws its own heading (the seller profile's panel).
+  headerless?: boolean;
 }) {
   // Client-managed copy of items so a card whose countdown hits zero can
   // remove itself (via onEnded) without waiting for a refresh — this is
@@ -49,20 +51,17 @@ export default function ListingSection({
   }
 
   return (
-    <section id={id} className="py-4">
+    <section id={id} className={headerless ? "" : "py-4"}>
+      {!headerless && (
       <div className="mb-5 flex items-end justify-between">
         <div>
           <h2 className="text-xl font-bold text-gray-900">{title}</h2>
           {subtitle && <p className="text-sm text-gray-500">{subtitle}</p>}
         </div>
-        {layout === "grid" && (
-          <Link href="#" className="text-sm font-medium text-brand-navy hover:underline">
-            View all
-          </Link>
-        )}
       </div>
+      )}
       {layout === "row" ? (
-        <div className="flex flex-col rounded-xl border border-brand-border bg-white px-2 sm:px-2.5">
+        <div className="flex flex-col rounded-xl border border-brand-border bg-white px-4 sm:px-6">
           {visibleItems.map((listing) => (
             <ListingRow
               key={listing.id}

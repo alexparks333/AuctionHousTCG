@@ -146,7 +146,7 @@ export default function ClaimStart({ isLoggedIn }: { isLoggedIn: boolean }) {
               >
                 <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-lg bg-brand-surface">
                   {o.listingImageUrl && (
-                    <Image src={o.listingImageUrl} alt="" fill className="object-cover" />
+                    <Image src={o.listingImageUrl} alt="" fill sizes="48px" className="object-cover" />
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
@@ -166,10 +166,10 @@ export default function ClaimStart({ isLoggedIn }: { isLoggedIn: boolean }) {
 
           {filtered.length > 0 && (
             <Link
-              href={role === "seller" ? "/account/sold-history" : "/account/buy-history"}
+              href={role === "seller" ? "/account/history?view=sold" : "/account/history?view=bought"}
               className="mt-3 inline-block text-xs font-medium text-brand-navy hover:underline"
             >
-              View all in {role === "seller" ? "Sold History" : "Buy History"} &rarr;
+              View all in History &rarr;
             </Link>
           )}
         </div>
@@ -189,7 +189,7 @@ export default function ClaimStart({ isLoggedIn }: { isLoggedIn: boolean }) {
             <div className="flex items-center gap-3">
               <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-lg bg-brand-surface">
                 {selected.listingImageUrl && (
-                  <Image src={selected.listingImageUrl} alt="" fill className="object-cover" />
+                  <Image src={selected.listingImageUrl} alt="" fill sizes="48px" className="object-cover" />
                 )}
               </div>
               <div className="min-w-0">

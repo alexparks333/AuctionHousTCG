@@ -6,9 +6,11 @@ import ReviewsList from "@/components/ReviewsList";
 import SavedCardsManager from "@/components/SavedCardsManager";
 import SavedBanksManager from "@/components/SavedBanksManager";
 import SellerPayoutsSetup from "@/components/SellerPayoutsSetup";
+import KycSummary from "@/components/KycSummary";
 import UsernameForm from "./UsernameForm";
 import BioForm from "./BioForm";
 import AddressForm from "./AddressForm";
+import DeleteAccountSection from "./DeleteAccountSection";
 import { getCurrentSession } from "@/lib/session";
 import {
   getMe,
@@ -157,6 +159,25 @@ export default async function AccountSettingsPage() {
           </div>
         </section>
 
+        <section className="rounded-xl border border-brand-border bg-white p-5">
+          <div className="flex items-center gap-2">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand-surface text-brand-navy">
+              <ShieldCheck size={15} />
+            </span>
+            <h2 className="text-sm font-semibold text-gray-900">KYC Authentication</h2>
+          </div>
+          <p className="mt-1 text-sm text-gray-500">
+            Verifying your account raises how much you can bid or buy, and protects everyone here from
+            banned accounts simply signing back up.
+          </p>
+          <KycSummary
+            phoneVerifiedAt={me?.phoneVerifiedAt ?? null}
+            emailVerifiedAt={me?.emailVerifiedAt ?? null}
+            identityVerifiedAt={me?.identityVerifiedAt ?? null}
+            bankVerifiedAt={me?.bankVerifiedAt ?? null}
+          />
+        </section>
+
         {isStripeConfigured() && (
           <section className="rounded-xl border border-brand-border bg-white p-5">
             <div className="flex items-center gap-2">
@@ -269,6 +290,8 @@ export default async function AccountSettingsPage() {
           </p>
           <ReviewsList reviews={reviews} username={me?.username ?? undefined} isOwner />
         </section>
+
+        <DeleteAccountSection />
       </div>
     </div>
   );

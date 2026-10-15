@@ -26,6 +26,25 @@ export function formatDateTime(iso: string): string {
   });
 }
 
+// The Sell wizard's MoneyInput "shift digits through a fixed decimal
+// point" typing behavior, shared with anywhere else a dollar amount gets
+// typed (BidBox's max bid, MakeOfferButton's offer amount): every
+// keystroke — typed, pasted, autofilled, IME, anything — gets reduced to
+// its raw digits and re-read as a whole number of cents, then reformatted
+// to exactly 2 decimal places. That's what makes "54.7887" structurally
+// impossible to end up with (no path produces more than 2 decimals), and
+// what gives the "0.01 -> type 1 -> 0.11 -> type 4 -> 1.14 -> type 5 ->
+// 11.45" cents-first shift-left feel real money inputs elsewhere use — the
+// decimal point never moves, digits shift through it. Pair with
+// `type="text" inputMode="decimal"` on the input, never `type="number"`
+// (which would let the browser's own free-typing behavior through).
+export function shiftCentsInput(raw: string): string {
+  const digits = raw.replace(/[^0-9]/g, "");
+  if (digits === "") return "";
+  const cents = Math.min(Number.parseInt(digits, 10), 99_999_999); // $999,999.99 ceiling
+  return (cents / 100).toFixed(2);
+}
+
 // A review/rating count next to a star row has no room for "(100,506)" —
 // this is the "(1.1k)"/"(100.5k)" shorthand once it crosses 1000, one
 // decimal place, no trailing ".0" (2000 -> "2k", not "2.0k").

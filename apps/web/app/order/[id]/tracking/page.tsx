@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import { AlertTriangle, ArrowLeft, CheckCircle2, Circle, Package, Truck } from "lucide-react";
@@ -74,10 +75,11 @@ export default async function OrderTrackingPage({
           <div className="rounded-2xl border border-brand-border bg-white p-6">
             <div className="flex items-center gap-4">
               {listing.imageUrls?.[0] ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
+                <Image
                   src={listing.imageUrls[0]}
                   alt=""
+                  width={56}
+                  height={56}
                   className="h-14 w-14 shrink-0 rounded-lg object-cover"
                 />
               ) : (

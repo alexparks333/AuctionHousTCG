@@ -17,6 +17,7 @@ export default function BuyNowButton({
   priceCents,
   label,
   variant = "default",
+  size = "default",
   className = "",
 }: {
   listingId: string;
@@ -29,6 +30,13 @@ export default function BuyNowButton({
   // stacked lines to the left of a larger price, both on one row, no
   // wrapping. Ignores `label` when set.
   variant?: "default" | "split";
+  // "lg" is ListingRow's search-results row, whose action button sits
+  // alone at the bottom of a wide row (not squeezed next to a title the
+  // way ListingCard's is) — a proper size variant rather than passing
+  // conflicting padding/text-size utilities through `className`, which
+  // Tailwind's class-order-dependent specificity can't reliably override.
+  // Only affects the "default" variant; "split" stays compact regardless.
+  size?: "default" | "lg";
   // Lets callers that sit this button next to another control in a flex
   // row (e.g. ListingCard's Buy It Now + Make an Offer pair) add flex-1/
   // w-full without every other call site needing to know about that.
@@ -41,7 +49,11 @@ export default function BuyNowButton({
       type="button"
       onClick={() => router.push(`/checkout/${listingId}`)}
       className={`rounded-lg bg-brand-gold text-white transition-colors hover:bg-brand-gold-light ${
-        variant === "split" ? "px-3 py-2" : "px-4 py-2.5 text-sm font-semibold"
+        variant === "split"
+          ? "px-3 py-2"
+          : size === "lg"
+            ? "px-7 py-3.5 text-base font-semibold"
+            : "px-4 py-2.5 text-sm font-semibold"
       } ${className}`}
     >
       {variant === "split" ? (

@@ -39,6 +39,7 @@ export default function AddressAutocompleteInput({
 
   useEffect(() => {
     if (!value.trim() || value.trim().length < 4) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clears suggestions when the input gets too short to search
       setSuggestions([]);
       setOpen(false);
       return;

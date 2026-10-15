@@ -14,6 +14,8 @@ const PEEK_X = 96;
 const PEEK_Y = 24;
 const PEEK_SCALE = 0.75;
 const PEEK_OPACITY = 0.65;
+// The peek is also tilted away from the front card, like a fanned hand.
+const PEEK_ROTATE = 9;
 
 // The hero's featured carousel — real auctions ranked by real watcher count
 // (never fabricated placement), never the static gradient mockups this used
@@ -85,7 +87,7 @@ export default function FeaturedAuctionCards({ listings }: { listings: Listing[]
           const isCenter = offset === 0;
           const card = (
             <>
-              <ListingImage src={listing.imageUrls?.[0]} game={listing.game} label={listing.title} />
+              <ListingImage src={listing.imageUrls?.[0]} game={listing.game} label={listing.title} sizes="256px" />
               {isCenter && (
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-4 pt-14">
                   <p className="text-[11px] font-medium uppercase tracking-wide text-brand-gold-light">
@@ -115,7 +117,9 @@ export default function FeaturedAuctionCards({ listings }: { listings: Listing[]
               style={{
                 transform: `translate(${offset * PEEK_X}px, ${
                   offset === 0 ? 0 : offset > 0 ? PEEK_Y : -PEEK_Y
-                }px) scale(${offset === 0 ? 1 : PEEK_SCALE})`,
+                }px) rotate(${offset === 0 ? 0 : Math.sign(offset) * PEEK_ROTATE}deg) scale(${
+                  offset === 0 ? 1 : PEEK_SCALE
+                })`,
                 opacity: offset === 0 ? 1 : offset === 1 ? PEEK_OPACITY : 0,
                 zIndex: offset === 0 ? 30 : Math.abs(offset) === 1 ? 10 : 0,
                 transitionProperty: isJump[i] ? "opacity" : "transform, opacity",
@@ -143,24 +147,24 @@ export default function FeaturedAuctionCards({ listings }: { listings: Listing[]
           );
         })}
 
+        {/* Prev/next sit just outside the card's edges, over the hero
+            background rather than the card art. */}
         {listings.length > 1 && (
           <>
-            <button
-              type="button"
+            <ArrowButton
+              label="Previous featured listing"
               onClick={() => go(-1)}
-              aria-label="Previous featured auction"
-              className="absolute left-2 top-1/2 z-40 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-brand-navy shadow-md backdrop-blur transition-colors hover:bg-white"
+              className="-left-14"
             >
-              <ChevronLeft size={16} />
-            </button>
-            <button
-              type="button"
+              <ChevronLeft size={18} />
+            </ArrowButton>
+            <ArrowButton
+              label="Next featured listing"
               onClick={() => go(1)}
-              aria-label="Next featured auction"
-              className="absolute right-2 top-1/2 z-40 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-brand-navy shadow-md backdrop-blur transition-colors hover:bg-white"
+              className="-right-14"
             >
-              <ChevronRight size={16} />
-            </button>
+              <ChevronRight size={18} />
+            </ArrowButton>
           </>
         )}
       </div>
@@ -181,5 +185,29 @@ export default function FeaturedAuctionCards({ listings }: { listings: Listing[]
         </div>
       )}
     </div>
+  );
+}
+
+// Frosted glass circle that warms to gold on hover.
+function ArrowButton({
+  label,
+  onClick,
+  className,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  className: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      className={`absolute top-1/2 z-40 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/[0.07] text-white/80 ring-1 ring-white/15 backdrop-blur transition-all hover:scale-105 hover:bg-brand-gold hover:text-white hover:shadow-lg hover:shadow-brand-gold/30 hover:ring-brand-gold-light/60 active:scale-95 ${className}`}
+    >
+      {children}
+    </button>
   );
 }

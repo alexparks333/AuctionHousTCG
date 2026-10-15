@@ -36,6 +36,13 @@ type Summary struct {
 	// same "derive server-side, don't re-derive client-side" rule as the
 	// rest of this codebase's auth-adjacent fields.
 	ViewerIsSeller bool `json:"viewerIsSeller"`
+	// BundleCardCount is how many extra cards were added to this order at
+	// checkout ("Add Singles To Your Order", order_addons, voided lines
+	// excluded) — 0 for a plain one-card order. BundleListingIDs are the
+	// add-on lines that were whole listings (not Singles Shop singles), so
+	// the Selling page can mark those listings as part of a bundle too.
+	BundleCardCount  int      `json:"bundleCardCount"`
+	BundleListingIDs []string `json:"bundleListingIds"`
 }
 
 // ListForUser returns every order userID is a participant in, either as
@@ -48,7 +55,10 @@ func ListForUser(ctx context.Context, pool *pgxpool.Pool, userID string) ([]Summ
 			l.title, l.image_urls[1],
 			case when o.buyer_id = $1 then o.seller_id else o.buyer_id end,
 			case when o.buyer_id = $1 then su.username else bu.username end,
-			su.username, bu.username
+			su.username, bu.username,
+			coalesce((select sum(a.quantity) from order_addons a where a.order_id = o.id and a.voided_at is null), 0)::int,
+			coalesce((select array_agg(a.listing_id::text) from order_addons a
+				where a.order_id = o.id and a.voided_at is null and a.listing_id is not null), '{}')
 		from orders o
 		join order_items oi on oi.order_id = o.id
 		join listings l on l.id = oi.listing_id
@@ -81,11 +91,13 @@ func scanSummary(row pgx.Row, viewerID string) (*Summary, error) {
 		&o.TierPctAtSale,
 		&o.SubtotalCents, &o.ShippingCents, &o.SellerFeeCents, &o.SellerNetCents,
 		&o.DiscountCents, &o.TaxCents, &o.ChargedCents, &o.TrackingNumber, &o.Carrier,
-		&o.ShippedAt, &o.DeliveredAt, &o.ClaimDeadline, &o.ReleasedAt, &o.CreatedAt,
+		&o.ShippedAt, &o.DeliveredAt, &o.ClaimDeadline, &o.ReleasedAt,
+		&o.ShipDeadline, &o.ShipExtensionUsedAt, &o.CreatedAt,
 		&o.StripePaymentIntentID, &o.ShippingPreset, &o.SignatureRequired,
 		&o.ProviderShipmentID, &o.LabelCostCents, &o.LabelURL,
 		&s.ListingTitle, &s.ListingImageURL, &s.CounterpartyID, &s.CounterpartyUsername,
 		&s.SellerUsername, &s.BuyerUsername,
+		&s.BundleCardCount, &s.BundleListingIDs,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan order summary: %w", err)

@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { ShieldCheck } from "lucide-react";
+import { Check, ShieldCheck } from "lucide-react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import SellWizard from "@/components/SellWizard";
@@ -39,14 +39,39 @@ export default async function SellPage() {
   return (
     <div className="flex min-h-screen flex-col bg-brand-surface">
       <Header variant="logo-only" />
-      <main className="mx-auto w-full max-w-3xl flex-1 px-10 py-10 sm:px-12 lg:px-14">
-        <h1 className="text-3xl font-bold text-gray-900">Create a listing</h1>
-        <p className="mt-1.5 text-base text-gray-500">
-          List a card as an auction or a fixed-price Buy It Now.
-        </p>
+      {/* Navy banner like the profile page's cover band; the wizard card
+          overlaps its bottom edge. */}
+      <section className="relative overflow-hidden bg-gradient-to-br from-brand-navy via-brand-navy-light to-slate-800 text-white">
+        <div aria-hidden className="absolute -right-24 -top-24 h-72 w-72 rounded-full bg-brand-gold/25 blur-3xl" />
+        <div aria-hidden className="absolute -bottom-32 left-1/4 h-64 w-[28rem] rounded-full bg-sky-400/10 blur-3xl" />
+        <div
+          aria-hidden
+          className="absolute inset-0 opacity-[0.07]"
+          style={{
+            backgroundImage: "radial-gradient(circle at 1px 1px, white 1px, transparent 0)",
+            backgroundSize: "18px 18px",
+          }}
+        />
+        <div className="relative mx-auto w-full max-w-4xl px-4 pb-24 pt-10 sm:px-8">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-brand-gold-light">Sell on AuctionHous</p>
+          <h1 className="mt-1 text-3xl font-bold tracking-tight sm:text-4xl">Create a listing</h1>
+          <p className="mt-2 max-w-xl text-white/70">
+            List a card as an auction or a fixed-price Buy It Now. Buyers pay you directly through Stripe.
+          </p>
+          <ul className="mt-5 flex flex-wrap gap-2 text-xs font-medium text-white/80">
+            {["Low seller fees", "Autofill from the card catalog", "Tracked shipping labels"].map((t) => (
+              <li key={t} className="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 ring-1 ring-white/15">
+                <Check size={13} className="text-brand-gold-light" /> {t}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
+
+      <main className="relative mx-auto -mt-16 w-full max-w-4xl flex-1 px-4 pb-14 sm:px-8">
 
         {needsOnboarding && connectStatus ? (
-          <div className="mt-6 rounded-2xl border border-brand-border bg-white p-8">
+          <div className="rounded-3xl border border-brand-border bg-white p-8 shadow-xl shadow-brand-navy/5">
             <div className="flex items-center gap-2">
               <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-surface text-brand-navy">
                 <ShieldCheck size={16} />

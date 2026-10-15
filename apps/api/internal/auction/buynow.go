@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stripe/stripe-go/v82"
 
+	"auctionhous-tcg/api/internal/kyc"
 	"auctionhous-tcg/api/internal/listing"
 	"auctionhous-tcg/api/internal/notification"
 	"auctionhous-tcg/api/internal/order"
@@ -63,6 +64,20 @@ func BuyNow(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID string) 
 
 	if buyerID == sellerID {
 		return nil, ErrSelfBid
+	}
+	var buyerSuspended, sellerSuspended bool
+	if err := tx.QueryRow(ctx, `
+		select
+			exists(select 1 from account_suspensions where user_id = $1 and now() < ends_at),
+			exists(select 1 from account_suspensions where user_id = $2 and now() < ends_at)
+	`, buyerID, sellerID).Scan(&buyerSuspended, &sellerSuspended); err != nil {
+		return nil, fmt.Errorf("check suspension status: %w", err)
+	}
+	if buyerSuspended {
+		return nil, ErrAccountSuspended
+	}
+	if sellerSuspended {
+		return nil, ErrListingSuspended
 	}
 	if buyItNowPriceCents == nil {
 		return nil, ErrNoBuyItNowPrice
@@ -163,6 +178,20 @@ func PayForWonFixedListing(ctx context.Context, pool *pgxpool.Pool, listingID, b
 
 var ErrPaymentRequired = errors.New("payment is required for this purchase")
 
+// ErrFraudPolicyNotAcknowledged guards the CSFloat-style checkout
+// acknowledgment ("if you reverse this through your bank instead of filing
+// a claim, you will be permanently banned") — required on every purchase
+// path this endpoint dispatches to, not just the card rail, since the
+// policy itself doesn't distinguish by payment rail.
+var ErrFraudPolicyNotAcknowledged = errors.New("you must acknowledge the chargeback policy before completing this purchase")
+
+// currentFraudPolicyVersion is stamped onto every order alongside
+// fraud_ack_at — bump this if the policy copy the buyer actually agreed to
+// ever changes materially, so a past order's acknowledgment always reflects
+// the exact wording that was live at the time, not whatever the copy says
+// today.
+const currentFraudPolicyVersion = 1
+
 type buyNowRequest struct {
 	// PaymentIntentID is optional only when Stripe isn't configured at all
 	// (paymentClient == nil) — the original always-free mock-payment path,
@@ -172,6 +201,10 @@ type buyNowRequest struct {
 	// mandatory, not anything the client claims, so calling this endpoint
 	// directly can't skip payment once real checkout is live.
 	PaymentIntentID string `json:"paymentIntentId"`
+	// FraudPolicyAcknowledged mirrors ShippingAddressGate.tsx's second
+	// required checkbox — enforced here, not just in the UI, since a
+	// direct call to this endpoint must not be able to skip it either.
+	FraudPolicyAcknowledged bool `json:"fraudPolicyAcknowledged"`
 }
 
 // HandleBuyNow dispatches a Buy It Now purchase to the right path for the
@@ -209,6 +242,11 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 			_ = json.NewDecoder(r.Body).Decode(&req)
 		}
 
+		if !req.FraudPolicyAcknowledged {
+			http.Error(w, ErrFraudPolicyNotAcknowledged.Error(), http.StatusBadRequest)
+			return
+		}
+
 		if paymentClient.IsConfigured() && req.PaymentIntentID == "" {
 			http.Error(w, ErrPaymentRequired.Error(), http.StatusPaymentRequired)
 			return
@@ -229,6 +267,14 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 		// sets paid_at itself as its own compare-and-swap guard, so the
 		// generic markPaid call below must be skipped for this path (it
 		// would otherwise be a redundant, if harmless, second write).
+		if level, err := kyc.LevelForUser(r.Context(), pool, buyerID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if err := kyc.CheckPurchase(level, estimatedPriceForBuyNow(lst, buyerID)); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+
 		payingForWonAuction := lst.Outcome != nil && *lst.Outcome == "sold" &&
 			lst.HighBidderID != nil && *lst.HighBidderID == buyerID
 
@@ -294,6 +340,52 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 			rail = order.RailAch
 		}
 
+		// Checkout add-ons ("Add Singles To Your Order", addons.go) are
+		// whatever this PaymentIntent authorized, read back by its verified
+		// id — never re-stated by the client. Claimed before the primary
+		// purchase so a sold-out single cancels the payment rather than
+		// charging for something that can't ship.
+		var addons []checkoutAddon
+		if pi != nil {
+			// A retry/double-click after this PaymentIntent already became an
+			// order must not claim its add-ons a second time.
+			if _, err := order.GetByPaymentIntentID(r.Context(), pool, pi.ID); err == nil {
+				http.Error(w, ErrAlreadyPaid.Error(), http.StatusConflict)
+				return
+			} else if !errors.Is(err, order.ErrNotFound) {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			addons, err = loadCheckoutAddons(r.Context(), pool, pi.ID)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if len(addons) > 0 {
+				level, err := kyc.LevelForUser(r.Context(), pool, buyerID)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				if err := kyc.CheckPurchase(level, estimatedPriceForBuyNow(lst, buyerID)+addonsSubtotal(addons)); err != nil {
+					http.Error(w, err.Error(), http.StatusForbidden)
+					return
+				}
+			}
+			if err := claimAddons(r.Context(), pool, lst.SellerID, buyerID, addons); err != nil {
+				if cancelErr := paymentClient.Cancel(r.Context(), pi.ID); cancelErr != nil {
+					log.Printf("buy-now: failed to cancel payment intent %s after add-on claim failed: %v", pi.ID, cancelErr)
+				}
+				var unavailable *AddonUnavailableError
+				if errors.As(err, &unavailable) {
+					http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+
 		var result *listing.Listing
 		switch {
 		case payingForWonFixedOffer:
@@ -306,6 +398,9 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 			result, err = BuyNow(r.Context(), pool, listingID, buyerID)
 		}
 		if err != nil {
+			// The primary purchase failed after the add-ons were already
+			// claimed — put them back before reporting the failure.
+			releaseAddons(r.Context(), pool, buyerID, addons)
 			if pi != nil {
 				// This buyer authorized a card but lost the race (or the
 				// listing became invalid between authorizing and now) —
@@ -320,7 +415,7 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 				status = http.StatusNotFound
 			case errors.Is(err, listing.ErrAlreadySold), errors.Is(err, ErrAuctionEnded), errors.Is(err, ErrNoBuyItNowPrice), errors.Is(err, listing.ErrNotFixedFormat), errors.Is(err, ErrAlreadyPaid):
 				status = http.StatusConflict
-			case errors.Is(err, listing.ErrSelfPurchase), errors.Is(err, ErrSelfBid):
+			case errors.Is(err, listing.ErrSelfPurchase), errors.Is(err, ErrSelfBid), errors.Is(err, ErrAccountSuspended), errors.Is(err, ErrListingSuspended), errors.Is(err, listing.ErrAccountSuspended), errors.Is(err, listing.ErrListingSuspended), errors.Is(err, kyc.ErrPurchaseNotAllowed), errors.Is(err, kyc.ErrExceedsPurchaseCap):
 				status = http.StatusForbidden
 			}
 			http.Error(w, err.Error(), status)
@@ -335,12 +430,21 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 			// comment, so "resolving a win" for ACH means simply not
 			// cancelling it.
 			var captureErr error
-			var chargeID string
+			var chargeID, fingerprint string
 			if rail == order.RailCard {
 				var captured *stripe.PaymentIntent
 				captured, captureErr = paymentClient.Capture(r.Context(), pi.ID)
-				if captureErr == nil && captured.LatestCharge != nil {
-					chargeID = captured.LatestCharge.ID
+				if captureErr == nil {
+					if captured.LatestCharge != nil {
+						chargeID = captured.LatestCharge.ID
+					}
+					// Captured, not just Retrieved: Capture (payment.go)
+					// expands payment_method specifically so this is
+					// available with no extra Stripe round-trip. A
+					// brand-new card's fingerprint genuinely isn't knowable
+					// any earlier than this — see createOrderRecord's
+					// post-capture ban check below.
+					fingerprint = payment.PaymentMethodFingerprint(captured)
 				}
 			}
 			if captureErr != nil {
@@ -382,7 +486,7 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 				// worse than a logged inconsistency. Re-quotes fresh from
 				// the seller's currently-stored tier rather than trusting
 				// anything computed at checkout-intent time (CLAUDE.md §5.3).
-				createOrderRecord(r.Context(), pool, listingID, buyerID, lst.SellerID, pi, chargeID, rail, result)
+				createOrderRecord(r.Context(), pool, paymentClient, listingID, buyerID, lst.SellerID, pi, chargeID, fingerprint, rail, result, addons)
 			}
 		}
 
@@ -430,12 +534,16 @@ func containsUSBankAccount(types []string) bool {
 // later. Logged, not returned as an error: this runs only after a real
 // Stripe payment already committed, so a failure here must never look like
 // the purchase itself failed.
-func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID, sellerID string, pi *stripe.PaymentIntent, chargeID string, rail order.Rail, result *listing.Listing) {
-	subtotalCents := subtotalForResult(result)
-	if subtotalCents <= 0 {
+func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, listingID, buyerID, sellerID string, pi *stripe.PaymentIntent, chargeID, fingerprint string, rail order.Rail, result *listing.Listing, addons []checkoutAddon) {
+	primaryPriceCents := subtotalForResult(result)
+	if primaryPriceCents <= 0 {
 		log.Printf("buy-now: no purchasable price on result for order record (listing %s)", listingID)
 		return
 	}
+	// The whole bundle is one order: add-ons count toward the subtotal the
+	// fee quote, shipping upgrade, and recorded totals are computed from,
+	// exactly as HandleCreateCheckoutIntent priced it.
+	subtotalCents := primaryPriceCents + addonsSubtotal(addons)
 
 	// The listing's own chosen preset is only a floor the seller opted into
 	// at listing time — never trusted alone, since a low-starting-bid
@@ -445,6 +553,7 @@ func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, listingID, buyer
 	// recompute fresh (a pure function of the subtotal/listing preset),
 	// unlike shippingCents/signatureRequired below.
 	resolvedPreset, fallbackSignatureRequired := shipping.UpgradePreset(shipping.Preset(result.ShippingPreset), subtotalCents, result.RequestSignature)
+	resolvedPreset = shipping.UpgradeForItemCount(resolvedPreset, 1+addonsCardCount(addons))
 
 	// shippingCents/signatureRequired come straight off the PaymentIntent's
 	// own metadata — the exact live-quoted number checkout.go authorized
@@ -474,6 +583,7 @@ func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, listingID, buyer
 		StripeChargeID:        chargeID,
 		ShippingPreset:        string(resolvedPreset),
 		SignatureRequired:     signatureRequired,
+		PrimaryPriceCents:     primaryPriceCents,
 	}
 
 	// A won-via-bidding purchase already has a real, unpaid order row —
@@ -486,6 +596,12 @@ func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, listingID, buyer
 	if existing, err := order.GetForListing(ctx, pool, listingID); err == nil {
 		if ferr := order.FinalizePayment(ctx, pool, existing.ID, in); ferr != nil {
 			log.Printf("buy-now: failed to finalize pending order %s for %s: %v", existing.ID, listingID, ferr)
+			return
+		}
+		if aerr := attachAddonsToOrder(ctx, pool, existing.ID, addons, rail == order.RailCard); aerr != nil {
+			log.Printf("buy-now: failed to attach add-ons to order %s: %v", existing.ID, aerr)
+		}
+		if checkFraudAndStampOrder(ctx, pool, paymentClient, existing.ID, pi, fingerprint) {
 			return
 		}
 		if rail == order.RailCard {
@@ -504,6 +620,13 @@ func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, listingID, buyer
 		log.Printf("buy-now: failed to create order record for %s: %v", listingID, err)
 		return
 	}
+	if err := attachAddonsToOrder(ctx, pool, orderID, addons, rail == order.RailCard); err != nil {
+		log.Printf("buy-now: failed to attach add-ons to order %s: %v", orderID, err)
+	}
+
+	if checkFraudAndStampOrder(ctx, pool, paymentClient, orderID, pi, fingerprint) {
+		return
+	}
 
 	if rail == order.RailAch {
 		if err := order.Transition(ctx, pool, orderID, order.StateCreated, order.StatePaymentPending); err != nil {
@@ -519,6 +642,104 @@ func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, listingID, buyer
 	if err := order.Transition(ctx, pool, orderID, order.StatePaid, order.StateAwaitingShip); err != nil {
 		log.Printf("buy-now: failed to transition order %s to awaiting_ship: %v", orderID, err)
 	}
+}
+
+// checkFraudAndStampOrder stamps the checkout-time fraud-policy
+// acknowledgment and payment-method fingerprint onto orderID, then checks
+// whether that fingerprint already belongs to a banned account — the
+// post-capture ban-evasion check for a brand-new card/bank, whose
+// fingerprint genuinely isn't knowable until after Stripe processes it
+// (unlike the pre-charge check for a saved method, internal/auction/
+// checkout.go's HandleCreateCheckoutIntent). fingerprint is only ever
+// non-empty for the card rail today (Capture expands payment_method; the
+// ACH rail's confirm-and-auto-capture path doesn't go through Capture at
+// all) — a real, accepted gap, not an oversight: closing it means
+// expanding payment_method on whatever call resolves an ACH PaymentIntent
+// too, not yet done here.
+//
+// Returns true if the order was refunded and cancelled for a banned-
+// fingerprint match — callers must not run any further transition on it.
+func checkFraudAndStampOrder(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, orderID string, pi *stripe.PaymentIntent, fingerprint string) bool {
+	var fingerprintArg *string
+	if fingerprint != "" {
+		fingerprintArg = &fingerprint
+	}
+	if _, err := pool.Exec(ctx, `
+		update orders set fraud_ack_at = now(), fraud_policy_version = $1, buyer_payment_fingerprint = $2
+		where id = $3
+	`, currentFraudPolicyVersion, fingerprintArg, orderID); err != nil {
+		log.Printf("buy-now: failed to stamp fraud fields on order %s: %v", orderID, err)
+	}
+
+	if fingerprint == "" {
+		return false
+	}
+
+	var banned bool
+	if err := pool.QueryRow(ctx, `
+		select exists(
+			select 1 from orders o
+			join account_suspensions s on s.user_id = o.buyer_id
+			where o.buyer_payment_fingerprint = $1 and s.reason = 'chargeback_fraud' and now() < s.ends_at
+				and o.id != $2
+		)
+	`, fingerprint, orderID).Scan(&banned); err != nil {
+		log.Printf("buy-now: failed to check fingerprint ban for order %s: %v", orderID, err)
+		return false
+	}
+	if !banned {
+		return false
+	}
+
+	log.Printf("buy-now: order %s used a payment method fingerprint tied to a banned account — refunding and cancelling", orderID)
+	if pi != nil {
+		if err := paymentClient.Refund(ctx, pi.ID); err != nil {
+			log.Printf("buy-now: failed to refund banned-fingerprint order %s: %v", orderID, err)
+		}
+	}
+	o, err := order.GetByID(ctx, pool, orderID)
+	if err != nil {
+		log.Printf("buy-now: failed to read order %s to cancel banned-fingerprint purchase: %v", orderID, err)
+		return true
+	}
+	if err := order.Transition(ctx, pool, orderID, o.State, order.StateRefunded); err != nil {
+		log.Printf("buy-now: failed to transition banned-fingerprint order %s to refunded: %v", orderID, err)
+	}
+	if _, err := pool.Exec(ctx, `update order_items set voided_at = now() where order_id = $1`, orderID); err != nil {
+		log.Printf("buy-now: failed to void order_items for banned-fingerprint order %s: %v", orderID, err)
+	}
+	if err := order.ReleaseAddons(ctx, pool, orderID); err != nil {
+		log.Printf("buy-now: failed to release add-ons for banned-fingerprint order %s: %v", orderID, err)
+	}
+	return true
+}
+
+// estimatedPriceForBuyNow mirrors checkout.go's own price-resolution switch
+// (subtotalCents), computed against the listing pre-purchase rather than
+// the post-purchase result subtotalForResult uses below — this is a KYC
+// enforcement check that has to run before BuyNow/PayForWonAuction/etc.
+// ever executes, not after.
+func estimatedPriceForBuyNow(lst *listing.Listing, buyerID string) int64 {
+	switch {
+	case lst.Format == listing.FormatFixed && lst.BuyerID != nil && *lst.BuyerID == buyerID:
+		if lst.SoldPriceCents != nil {
+			return *lst.SoldPriceCents
+		}
+		if lst.PriceCents != nil {
+			return *lst.PriceCents
+		}
+	case lst.Format == listing.FormatFixed:
+		if lst.PriceCents != nil {
+			return *lst.PriceCents
+		}
+	case lst.Outcome != nil && *lst.Outcome == "sold" && lst.HighBidderID != nil && *lst.HighBidderID == buyerID:
+		if lst.CurrentPriceCents != nil {
+			return *lst.CurrentPriceCents
+		}
+	case lst.BuyItNowPriceCents != nil:
+		return *lst.BuyItNowPriceCents
+	}
+	return 0
 }
 
 // subtotalForResult derives the item price an order should be quoted

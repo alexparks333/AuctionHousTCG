@@ -22,6 +22,13 @@ export const GAMES: Game[] = [
   "Sports Cards",
 ];
 
+// Mirrors apps/api/internal/catalog.EnabledGames — the games the
+// marketplace is currently open for (Riftbound-only for now, an explicit
+// product focus decision). Drives CategoryNav, the Sell wizard's game
+// picker, and catalog card search; GAMES above stays the full list so
+// existing listings in other games still type-check and render.
+export const ENABLED_GAMES: Game[] = ["Riftbound"];
+
 // Mirrors apps/api/internal/cardcatalog.Card's JSON exactly — a card from
 // TCG Haven's Firestore catalog, read-only. Used by the Sell wizard's
 // autofill (Step1Details, always called with a game already chosen) and
@@ -44,6 +51,71 @@ export interface CatalogCard {
   imageUrl: string;
   tags: string[] | null;
   hidden: boolean;
+  // Riftbound set code ("SFD"), printed collector code, and card type.
+  setCode?: string;
+  publicCode?: string;
+  cardType?: string;
+  // TCG Haven's synced TCGplayer market prices, in dollars (0 = unknown) —
+  // shown to sellers as a reference; singlesPriceCents derives the Singles
+  // Shop price from it.
+  marketPrice?: number;
+  marketPriceFoil?: number;
+  // The collector number as printed ("92a", "SP6"); `number` is the bare
+  // digit for Riftbound alt arts.
+  displayNumber?: string;
+  // Whether this card can go in a Singles Shop — Commons, Uncommons, and
+  // Rares only (normal prints). Decided by the API
+  // (apps/api/internal/cardcatalog.singlesEligible); Epics, Alt Arts,
+  // Overnumbered, etc. are sold as regular listings.
+  singlesEligible?: boolean;
+  // Only printed as a foil (every Riftbound Rare and up) — mirrors
+  // apps/api/internal/cardcatalog.foilOnly. Commons/Uncommons come in both
+  // Non-foil and Foil, at different prices.
+  foilOnly?: boolean;
+}
+
+// Mirrors apps/api/internal/cardcatalog.SetInfo/SetGroup — the Singles
+// Shop's set picker, grouped like TCG Haven's Cardex.
+export interface CatalogSet {
+  name: string;
+  label: string;
+  code?: string;
+  releaseDate?: string;
+  cardCount: number;
+  // How many of cardCount can go in a Singles Shop.
+  singlesCount: number;
+}
+
+// Mirrors apps/api/internal/cardcatalog.SinglesRarities.
+export const SINGLES_RARITIES = ["Common", "Uncommon", "Rare"];
+
+export interface CatalogSetGroup {
+  label: string;
+  sets: CatalogSet[];
+}
+
+// Riftbound rarities that only exist as foil prints — the Singles Shop
+// defaults their Foil toggle on.
+const FOIL_ONLY_RARITIES = new Set(["Alt Art", "Showcase", "Star"]);
+
+export function isFoilOnly(
+  card: Pick<CatalogCard, "rarity" | "marketPrice" | "marketPriceFoil" | "foilOnly">,
+): boolean {
+  if (card.foilOnly !== undefined) return card.foilOnly;
+  return FOIL_ONLY_RARITIES.has(card.rarity) || (!card.marketPrice && Boolean(card.marketPriceFoil));
+}
+
+// The market price for that finish (falling back to the other finish's
+// price) — the same rule TCG Haven's catalogPrice uses, and the same as
+// apps/api/internal/singles.MarketCents. 0 when the catalog has no price.
+export function marketPriceCents(
+  card: Pick<CatalogCard, "marketPrice" | "marketPriceFoil">,
+  isFoil: boolean,
+): number {
+  const base = card.marketPrice ?? 0;
+  const foil = card.marketPriceFoil ?? 0;
+  const dollars = isFoil ? foil || base : base || foil;
+  return Math.round(dollars * 100);
 }
 
 // Mirrors apps/api/internal/shipping.Preset's five values exactly. Each is
@@ -330,6 +402,69 @@ export function purchaseDate(listing: Listing): string | undefined {
   return listing.format === "fixed" ? listing.soldAt : listing.closedAt;
 }
 
+// Mirrors apps/api/internal/shipping.EnvelopeMaxCards — past this many
+// cards (the primary card plus checkout add-ons), an order ships as a
+// tracked package instead of an envelope, and the buyer pays that rate.
+export const ENVELOPE_MAX_CARDS = 10;
+
+// Raw-card conditions, best to worst — mirrors apps/api/internal/catalog.
+// ConditionOrder (which runs worst to best). Shared by the Sell wizard and
+// the Singles Shop.
+export const CONDITIONS = ["Near Mint", "Lightly Played", "Moderately Played", "Heavily Played", "Damaged"] as const;
+
+// The Singles Shop's standardized prices — mirrors apps/api/internal/
+// singles/pricing.go exactly (the server is authoritative; this is only
+// for showing the price before stocking). Market price rounded DOWN to a
+// step, raised to the first step if below it, capped at the last;
+// Moderately Played drops one more step. Sellers never set a price.
+export const SINGLES_PRICE_LADDER_CENTS = [10, 25, 35, 50, 75, 100, 150, 200, 250, 350, 500];
+export const SINGLES_PRICE_CAP_CENTS = SINGLES_PRICE_LADDER_CENTS[SINGLES_PRICE_LADDER_CENTS.length - 1];
+
+// No Heavily Played or Damaged in the Singles Shop.
+export const SINGLES_CONDITIONS = ["Near Mint", "Lightly Played", "Moderately Played"] as const;
+
+export function singlesPriceCents(marketCents: number, condition: string): number {
+  let i = 0;
+  SINGLES_PRICE_LADDER_CENTS.forEach((step, j) => {
+    if (step <= marketCents) i = j;
+  });
+  if (condition === "Moderately Played" && i > 0) i--;
+  return SINGLES_PRICE_LADDER_CENTS[i];
+}
+
+// Short labels for tight spaces (Singles Shop tiles, the checkout add-on
+// picker) — the standard TCG shorthand.
+export const CONDITION_SHORT: Record<string, string> = {
+  "Near Mint": "NM",
+  "Lightly Played": "LP",
+  "Moderately Played": "MP",
+  "Heavily Played": "HP",
+  Damaged: "DMG",
+};
+
+// Mirrors apps/api/internal/singles.Single's JSON exactly — one row of a
+// seller's Singles Shop: a catalog card (standard catalog image, never a
+// seller photo) in one condition/foil variant, with a price and quantity
+// on hand. Bought only as an add-on at checkout ("Add Singles To Your
+// Order"), never standalone.
+export interface ShopSingle {
+  id: string;
+  sellerId: string;
+  game: string;
+  catalogCardId: string;
+  cardName: string;
+  setName: string;
+  cardNumber: string;
+  rarity?: string;
+  imageUrl?: string;
+  condition: string;
+  isFoil: boolean;
+  priceCents: number;
+  quantity: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export function formatPrice(cents: number): string {
   return (cents / 100).toLocaleString("en-US", {
     style: "currency",
@@ -343,14 +478,35 @@ export function formatPrice(cents: number): string {
 // postage cost, not an estimate — see that constant's own doc comment.
 export const TRACKED_ENVELOPE_CENTS = 156;
 
-// Mirrors apps/api/internal/shipping.SignatureRequestThresholdCents exactly
-// — once a listing's starting bid or Buy It Now price crosses this, the
-// Sell wizard/Edit form lock "Signature Required" on. Purely a UI
-// heuristic here (the real decision is always server-derived at
-// Create/Update, never trusted from the client) so the checkbox reflects
-// the real rule the moment a seller types a price, without waiting on a
-// round trip.
-export const SIGNATURE_REQUEST_THRESHOLD_CENTS = 25000;
+// Mirrors apps/api/internal/shipping.PackageRequiredCents exactly — $100+
+// can't ship as an envelope (Pitney Bowes' tracking only proves transit,
+// not delivery). Shared by ShippingPresetPicker (disables the envelope
+// options) and effectiveShipping below (what a listing will actually ship
+// as, given its current price).
+export const PACKAGE_REQUIRED_CENTS = 10000;
+
+// Mirrors apps/api/internal/shipping.DefaultPackageEstimateCents exactly —
+// the same fallback the backend itself uses when a shippo_ground_advantage
+// order has no real per-listing quote to fall back on (an order upgraded
+// from envelope at sale time, which never had one). effectiveShipping
+// below reuses it for the identical display-side case: a still-live
+// auction whose current bid has pushed it past the package threshold, but
+// which was never quoted for Ground Advantage since the seller originally
+// picked an envelope preset.
+export const DEFAULT_PACKAGE_ESTIMATE_CENTS = 600;
+
+// Mirrors apps/api/internal/shipping.SignatureRequiredCents exactly — ONE
+// threshold, checked against two different prices depending on context.
+// internal/listing.Create/Update check it against the listing's own
+// starting bid/Buy It Now price to lock the Sell wizard/Edit form's
+// "Signature Required" checkbox on at listing time (purely a UI heuristic
+// here — the real decision is always server-derived, never trusted from
+// the client). shipping.UpgradePreset checks the exact same number again
+// against the FINAL sale price at checkout/close time, which is what
+// effectiveShipping below mirrors for a still-live auction: a
+// $0.99-starting listing that climbs past $250 needs to show as upgraded
+// even though it was never locked at listing time.
+export const SIGNATURE_REQUIRED_CENTS = 25000;
 
 // A rough, non-binding approximation of what signature confirmation adds
 // to a real Shippo label — $4.15 is the current (2026) USPS Signature
@@ -390,9 +546,18 @@ export function shippingDisplayText(listing: Listing): string {
 // checkout, since a buyer deciding whether to bid/buy benefits from
 // knowing the actual mechanism, not just the price.
 const SHIPPING_METHOD_LABELS: Record<ShippingPreset, string> = {
-  free_envelope: "Envelope",
-  free_bubble_mailer: "Bubble Mailer",
-  free_box: "Box",
+  free_envelope: "Tracked Envelope",
+  // free_bubble_mailer and free_box are both real, distinct packaging
+  // choices in the Sell wizard (different approxCents, different physical
+  // container the seller actually uses) — but to a buyer they're both
+  // just "a tracked package," so this buyer-facing label deliberately
+  // doesn't distinguish them, same word as free_box. Matters most for
+  // shipping.UpgradePreset's free_envelope -> free_bubble_mailer upgrade
+  // path: without this, an upgraded listing read as "Tracked Bubble
+  // Mailer," a needlessly different-sounding word for the same thing
+  // "Tracked Package" already says elsewhere.
+  free_bubble_mailer: "Tracked Package",
+  free_box: "Tracked Package",
   tracked_envelope: "Tracked Envelope",
   shippo_ground_advantage: "Ground Advantage (Tracked Package)",
 };
@@ -401,15 +566,58 @@ export function shippingMethodLabel(listing: Listing): string {
   return SHIPPING_METHOD_LABELS[listing.shippingPreset];
 }
 
+// Mirrors apps/api/internal/shipping.Preset.Mechanism() exactly — which
+// presets are envelope-mechanism (can't carry tracking/signature strong
+// enough once real money is at stake) vs. package-mechanism.
+const LETTER_PRESETS: ShippingPreset[] = ["free_envelope", "tracked_envelope"];
+
+export interface EffectiveShipping {
+  preset: ShippingPreset;
+  signatureRequired: boolean;
+  // True when this differs from the listing's own stored preset/
+  // requestSignature — i.e. the current price has pushed it past what the
+  // seller originally chose, same distinction AuctionPriceBox needs to
+  // decide whether to animate a change.
+  upgraded: boolean;
+}
+
+// Mirrors apps/api/internal/shipping.UpgradePreset exactly — what a
+// listing's shipping WILL resolve to given a price, not just what the
+// seller originally chose at listing time. This is display-only: the
+// backend always recomputes the real thing fresh, from the real final
+// price, at checkout/close/offer-accept time (buynow.go, close.go,
+// checkout.go all call the real UpgradePreset again, never trust anything
+// precomputed here) — this exists so a bidder watching an auction's price
+// climb past $100/$250 sees the shipping requirement upgrade live on the
+// listing page, instead of only finding out once they've already won.
+export function effectiveShipping(
+  preset: ShippingPreset,
+  priceCents: number,
+  requestSignature: boolean,
+): EffectiveShipping {
+  let resolved = preset;
+  if (priceCents >= PACKAGE_REQUIRED_CENTS && LETTER_PRESETS.includes(preset)) {
+    resolved = preset === "free_envelope" ? "free_bubble_mailer" : "shippo_ground_advantage";
+  }
+  const signatureRequired = requestSignature || priceCents >= SIGNATURE_REQUIRED_CENTS;
+  return {
+    preset: resolved,
+    signatureRequired,
+    upgraded: resolved !== preset || signatureRequired !== requestSignature,
+  };
+}
+
 // Shorter than SHIPPING_METHOD_LABELS' own strings (specifically
 // shippo_ground_advantage's "Ground Advantage (Tracked Package)") — for
 // ListingCard's compact price-block badge, which sits in a ~250px-wide
 // column next to a cost figure and an icon, not the detail page's full-width
 // line.
 const SHIPPING_METHOD_LABELS_COMPACT: Record<ShippingPreset, string> = {
-  free_envelope: "Envelope",
-  free_bubble_mailer: "Bubble Mailer",
-  free_box: "Box",
+  free_envelope: "Tracked Envelope",
+  // Same "buyer never needs to tell these apart" merge as
+  // SHIPPING_METHOD_LABELS above.
+  free_bubble_mailer: "Tracked Package",
+  free_box: "Tracked Package",
   tracked_envelope: "Tracked Envelope",
   shippo_ground_advantage: "Tracked Package",
 };
@@ -525,53 +733,6 @@ export function sellerTierAccentColorClass(tier: Listing["sellerTier"]): string 
       return "text-white";
   }
 }
-
-// The stickers offered on the profile canvas's Background layer
-// (StickerBoard.tsx) — exactly the tier icon art that already exists
-// (sellerTierIconSrc above); "new" and "platinum" have no commissioned art
-// yet, so they're not offered here either. Mirrors
-// apps/api/internal/user.validStickerKinds exactly — keep both lists in
-// sync if a new sticker is ever added. This is also the one indirection
-// point an animated sticker later hooks into: a GIF/WebP/APNG `src` here
-// just animates in the existing <img>, no placement-data or component
-// change needed (see the profile-canvas plan's forward-compat notes).
-export const PROFILE_STICKER_OPTIONS: { kind: string; label: string; src: string }[] = [
-  { kind: "bronze", label: "Bronze Tier", src: "/tiers/bronze.png" },
-  { kind: "silver", label: "Silver Tier", src: "/tiers/silver.png" },
-  { kind: "gold", label: "Gold Tier", src: "/tiers/gold.png" },
-  { kind: "hous_trust", label: "Hous Trust", src: "/tiers/hous.png" },
-];
-
-export function profileStickerSrc(kind: string): string | undefined {
-  return PROFILE_STICKER_OPTIONS.find((s) => s.kind === kind)?.src;
-}
-
-// The content widgets offered on the profile canvas's Widgets tab
-// (ProfileEditorPalette.tsx) — mirrors
-// apps/api/internal/user.validWidgetTypes exactly. Data-driven on purpose:
-// a new widget type later (a Showcase, achievements/badges, ...) is an
-// additional entry plus one renderer in ProfileEditor.tsx, not a rewrite
-// of the palette or the drag-to-reorder list.
-export const WIDGET_CATALOG: { type: string; label: string; description: string }[] = [
-  {
-    type: "listings",
-    label: "Listings",
-    description: "A scrollable row of your active listings.",
-  },
-  {
-    type: "favorite_card",
-    label: "Favorite Card",
-    description: "Showcase any card from our catalog as its own art piece.",
-  },
-  {
-    type: "empty_space",
-    label: "Empty Space",
-    description: "A blank 1x1 spacer to leave breathing room in the layout.",
-  },
-];
-
-// Mirrors apps/api/internal/user.maxWidgets exactly.
-export const MAX_WIDGETS = 6;
 
 // Commission rate for a seller trust tier — mirrors
 // apps/api/internal/seller.tierPct exactly (design doc v2 §3.1). Hous

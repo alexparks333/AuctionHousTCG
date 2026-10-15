@@ -78,7 +78,10 @@ func (c *Client) SearchAll(ctx context.Context, query string) ([]Card, error) {
 
 	var all []scored
 	for _, game := range SupportedGames {
-		slug, _ := gameSlug(game)
+		slug, ok := gameSlug(game)
+		if !ok {
+			continue
+		}
 		cards, err := c.visibleCards(ctx, slug)
 		if err != nil {
 			// One game's Firestore hiccup shouldn't blank the results for

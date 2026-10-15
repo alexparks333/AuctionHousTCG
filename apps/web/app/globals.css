@@ -160,6 +160,34 @@ body {
   animation: celebration-toast-out 0.4s cubic-bezier(0.4, 0, 1, 1) forwards;
 }
 
+/* MakeOfferButton (components/MakeOfferButton.tsx): the "sent" phase that
+   replaces the offer form on a successful submit — the trigger's own
+   HandCoins icon swooshes up and away (like it's actually being sent off
+   to the seller) while a success checkmark bursts into the same spot
+   behind it (animate-celebration-burst-in, reused as-is, just started via
+   an animation-delay so it lands right as the swoosh finishes rather than
+   both fighting for attention at once). */
+@keyframes offer-send-swoosh {
+  0% {
+    transform: translate(0, 0) scale(1) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(20px, -26px) scale(0.4) rotate(14deg);
+    opacity: 0;
+  }
+}
+.animate-offer-send-swoosh {
+  animation: offer-send-swoosh 0.45s cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-offer-send-swoosh {
+    animation: none;
+    opacity: 0;
+  }
+}
+
 /* MessageBubble (components/MessageBubble.tsx): a chat-head-style bubble
    for a real incoming message, distinct from CelebrationToast on purpose —
    slides in from the top-right corner (under the header) rather than the
@@ -240,6 +268,8 @@ body {
   animation: card-fade-collapse 0.35s ease-in forwards;
 }
 
+/* A small "pop in" (scale overshoot) — used by the message thread's
+   status ribbon (ThreadView.tsx). */
 @keyframes sticker-land {
   0% {
     transform: scale(0.35);
@@ -268,66 +298,3 @@ body {
   }
 }
 
-/* Profile canvas (components/profile/ProfileEditor.tsx and friends): the
-   customizable seller-profile canvas. This is the "vision board" the owner
-   drags widgets/stickers onto — it needs to read as a distinct surface from
-   the flat page behind it (both currently share --color-brand-surface, so
-   without this the canvas boundary was only a 1px border) without
-   competing with whatever's placed on top of it. Two soft radial tints
-   (gold top-left, navy bottom-right — the two brand colors, used at very
-   low opacity) plus a fine dot grid (a nod to a design-tool canvas/graph
-   paper, reinforcing "this is the thing you place stuff onto") sit under
-   everything else. Kept intentionally faint — this is the recessive layer,
-   stickers and widget cards are what's supposed to draw the eye. */
-.profile-canvas-backdrop {
-  background-color: var(--color-brand-surface);
-  background-image:
-    radial-gradient(circle at 10% -12%, rgba(184, 134, 11, 0.12), transparent 42%),
-    radial-gradient(circle at 104% 108%, rgba(15, 23, 41, 0.07), transparent 46%),
-    radial-gradient(rgba(15, 23, 41, 0.1) 1px, transparent 1px);
-  background-size:
-    100% 100%,
-    100% 100%,
-    22px 22px;
-  background-position:
-    0 0,
-    0 0,
-    -3px -3px;
-}
-
-/* The dashed "drop it here" ghost slot (ProfileEditor.tsx, while a palette
-   widget is hovering the stack) and the empty-canvas hint — a slow breathe
-   so an editing seller's eye is drawn to where something needs to happen,
-   without being distracting enough to fight the sticker-land pop. */
-@keyframes canvas-hint-pulse {
-  0%,
-  100% {
-    opacity: 0.55;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-.animate-canvas-hint-pulse {
-  animation: canvas-hint-pulse 1.8s ease-in-out infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .animate-canvas-hint-pulse {
-    animation: none;
-  }
-}
-
-/* react-colorful's picker defaults to a fixed 200x200 — stretch it to the
-   palette panel's content column (PaintToolbar.tsx) and shorten it a bit
-   so the Background tab doesn't become a scroll marathon. */
-.profile-paint-color-picker .react-colorful {
-  width: 100%;
-  height: 150px;
-}
-.profile-paint-color-picker .react-colorful__saturation {
-  border-radius: 10px 10px 0 0;
-}
-.profile-paint-color-picker .react-colorful__last-control {
-  border-radius: 0 0 10px 10px;
-}

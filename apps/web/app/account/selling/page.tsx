@@ -20,6 +20,14 @@ export default async function SellingPage() {
   ]);
 
   const isLoggedIn = Boolean(local);
+  // Every listing sold as part of a bundle ("Add Singles To Your Order") —
+  // the order's own listing plus any listings added onto it — so the
+  // History grid can tag them.
+  const bundleListingIds = new Set(
+    myOrders
+      .filter((o) => o.viewerIsSeller && o.bundleCardCount > 0)
+      .flatMap((o) => [o.listingId, ...(o.bundleListingIds ?? [])]),
+  );
   const awaitingShipmentIds = new Set(
     myOrders.filter((o) => o.viewerIsSeller && o.state === "awaiting_ship").map((o) => o.listingId),
   );
@@ -36,6 +44,7 @@ export default async function SellingPage() {
         isLoggedIn={isLoggedIn}
         currentUserId={local?.userId}
         awaitingShipmentIds={awaitingShipmentIds}
+        bundleListingIds={bundleListingIds}
       />
     </div>
   );

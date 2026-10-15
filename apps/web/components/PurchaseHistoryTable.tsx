@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { Listing } from "@/lib/types";
+import BundleTagPreview from "@/components/BundleTagPreview";
+import type { HistoryRow } from "@/lib/api";
 import { formatPrice, purchasePriceCents, purchaseDate } from "@/lib/types";
 
 // Shared by Buy History and Sold History — same table shape either way,
@@ -21,7 +22,7 @@ export default function PurchaseHistoryTable({
   items,
   role = "buying",
 }: {
-  items: Listing[];
+  items: HistoryRow[];
   role?: Role;
 }) {
   const router = useRouter();
@@ -58,19 +59,34 @@ export default function PurchaseHistoryTable({
                 className="cursor-pointer border-b border-brand-border last:border-0 hover:bg-brand-surface"
               >
                 <td className="px-4 py-3">
-                  <Link
-                    href={href}
-                    onClick={(e) => e.stopPropagation()}
-                    className="font-medium text-gray-900 hover:underline"
-                  >
-                    {listing.title}
-                  </Link>
+                  <span className="flex items-center gap-2">
+                    <Link
+                      href={href}
+                      onClick={(e) => e.stopPropagation()}
+                      className="font-medium text-gray-900 hover:underline"
+                    >
+                      {listing.title}
+                    </Link>
+                    {/* Hover lists the bundled cards (same tag as Transactions). */}
+                    {listing.bundleCardCount > 0 && <BundleTagPreview listingId={listing.id} />}
+                  </span>
                   <p className="text-xs text-gray-500">
                     {listing.game} · {listing.set}
                   </p>
                 </td>
-                <td className="px-4 py-3 font-semibold text-gray-900">
-                  {formatPrice(purchasePriceCents(listing))}
+                <td className="px-4 py-3">
+                  {/* The whole order's items: the main card plus anything
+                      bundled onto it at checkout. Shipping isn't included,
+                      same as before. */}
+                  <p className="font-semibold text-gray-900">
+                    {formatPrice(purchasePriceCents(listing) + listing.bundleCents)}
+                  </p>
+                  {listing.bundleCardCount > 0 && (
+                    <p className="text-xs text-gray-500">
+                      {formatPrice(purchasePriceCents(listing))} card + {formatPrice(listing.bundleCents)} for{" "}
+                      {listing.bundleCardCount} bundled {listing.bundleCardCount === 1 ? "card" : "cards"}
+                    </p>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-gray-600">
                   {counterpartyHref ? (

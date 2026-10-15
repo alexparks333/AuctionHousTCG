@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 
 	"auctionhous-tcg/api/internal/address"
@@ -17,7 +18,10 @@ import (
 	"auctionhous-tcg/api/internal/buyerreview"
 	"auctionhous-tcg/api/internal/cardcatalog"
 	"auctionhous-tcg/api/internal/dispute"
+	"auctionhous-tcg/api/internal/emailverify"
 	"auctionhous-tcg/api/internal/feedback"
+	"auctionhous-tcg/api/internal/identity"
+	"auctionhous-tcg/api/internal/kyc"
 	"auctionhous-tcg/api/internal/listing"
 	"auctionhous-tcg/api/internal/mail"
 	"auctionhous-tcg/api/internal/message"
@@ -28,10 +32,13 @@ import (
 	"auctionhous-tcg/api/internal/payment"
 	"auctionhous-tcg/api/internal/paymentmethod"
 	"auctionhous-tcg/api/internal/payout"
+	"auctionhous-tcg/api/internal/phoneverify"
 	"auctionhous-tcg/api/internal/photosession"
 	"auctionhous-tcg/api/internal/platform"
+	"auctionhous-tcg/api/internal/secondchance"
 	"auctionhous-tcg/api/internal/seller"
 	"auctionhous-tcg/api/internal/shipping"
+	"auctionhous-tcg/api/internal/singles"
 	"auctionhous-tcg/api/internal/user"
 	"auctionhous-tcg/api/internal/watchlist"
 	"auctionhous-tcg/api/internal/webhook"
@@ -47,37 +54,56 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	listing.AllowDevDurations = cfg.Environment != "production"
-	listing.AllowMissingPhotos = cfg.Environment != "production"
-	seller.AllowDevTierAdjust = cfg.Environment != "production"
-	order.AllowDevAdvance = cfg.Environment != "production"
-	message.AllowDevSimulateIncoming = cfg.Environment != "production"
+	// Dev-only tools need an explicit APP_ENV=development — anything else
+	// (unset, "production", a typo) leaves them off.
+	devMode := cfg.Environment == "development"
+	log.Printf("APP_ENV=%s — dev-only tools %s", cfg.Environment, map[bool]string{true: "ENABLED", false: "disabled"}[devMode])
+	listing.AllowDevDurations = devMode
+	listing.AllowMissingPhotos = devMode
+	seller.AllowDevTierAdjust = devMode
+	order.AllowDevAdvance = devMode
+	message.AllowDevSimulateIncoming = devMode
 
 	ctx := context.Background()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", handleHealthz)
 
+	// pool/verifier are hoisted here (rather than staying scoped to the
+	// SupabaseURL-configured block below, where they're created) so
+	// WithBanGuard can wrap the whole mux once at the bottom of main —
+	// both stay nil in the graceful-degradation case where Supabase isn't
+	// configured, in which case there's effectively no app to guard yet
+	// anyway.
+	var pool *pgxpool.Pool
+	var verifier *platform.AuthVerifier
+	// Hoisted for the same reason as pool/verifier above — the Singles Shop
+	// (registered inside the Supabase block below) needs it too. Stays nil
+	// when the catalog isn't configured; singles.HandleAdd checks for that.
+	var catalogClient *cardcatalog.Client
+
 	if cfg.CardCatalogProjectID == "" {
 		log.Println("CARD_CATALOG_PROJECT_ID not set — GET /catalog/search disabled (see apps/api/.env.example)")
 	} else {
-		catalogClient, err := cardcatalog.NewClient(ctx, cfg.CardCatalogProjectID, cfg.CardCatalogCredentialsFile)
+		catalogClient, err = cardcatalog.NewClient(ctx, cfg.CardCatalogProjectID, cfg.CardCatalogCredentialsFile)
 		if err != nil {
 			log.Fatalf("card catalog client: %v", err)
 		}
 		defer catalogClient.Close()
 		mux.HandleFunc("GET /catalog/search", cardcatalog.HandleSearch(catalogClient))
+		mux.HandleFunc("GET /catalog/sets", cardcatalog.HandleSets(catalogClient))
+		mux.HandleFunc("GET /catalog/cards", cardcatalog.HandleSetCards(catalogClient))
 	}
 
 	if cfg.SupabaseURL == "" {
 		log.Println("SUPABASE_URL not set — /me disabled until a Supabase project is configured (see apps/api/.env.example)")
 	} else {
-		pool, err := platform.NewPgxPool(ctx, cfg.DatabaseURL)
+		pool, err = platform.NewPgxPool(ctx, cfg.DatabaseURL)
 		if err != nil {
 			log.Fatalf("db pool: %v", err)
 		}
 		defer pool.Close()
 
-		verifier, err := platform.NewAuthVerifier(ctx, cfg.SupabaseURL+"/auth/v1/.well-known/jwks.json")
+		verifier, err = platform.NewAuthVerifier(ctx, cfg.SupabaseURL+"/auth/v1/.well-known/jwks.json")
 		if err != nil {
 			log.Fatalf("auth verifier: %v", err)
 		}
@@ -85,11 +111,25 @@ func main() {
 		mux.Handle("/me", verifier.RequireAuth(user.HandleMe(pool)))
 		mux.Handle("POST /me/username", verifier.RequireAuth(user.HandleSetUsername(pool)))
 		mux.Handle("POST /me/bio", verifier.RequireAuth(user.HandleSetBio(pool)))
-		mux.Handle("POST /me/stickers", verifier.RequireAuth(user.HandleSetStickers(pool)))
-		mux.Handle("POST /me/canvas", verifier.RequireAuth(user.HandleSetCanvas(pool)))
-		mux.Handle("POST /me/widgets", verifier.RequireAuth(user.HandleSetWidgets(pool)))
+		// Account deletion has to remove the Supabase Auth login too, which
+		// needs the service role key — without it, deletion isn't offered.
+		if cfg.SupabaseServiceRoleKey == "" {
+			log.Println("SUPABASE_SERVICE_ROLE_KEY not set — account deletion disabled (see apps/api/.env.example)")
+		} else {
+			mux.Handle("GET /me/delete-account", verifier.RequireAuth(user.HandleDeletionCheck(pool)))
+			mux.Handle("POST /me/delete-account", verifier.RequireAuth(user.HandleDeleteAccount(pool, cfg.SupabaseURL, cfg.SupabaseServiceRoleKey)))
+		}
 		mux.Handle("GET /me/address", verifier.RequireAuth(address.HandleGet(pool)))
 		mux.Handle("POST /me/address", verifier.RequireAuth(address.HandleUpsert(pool)))
+		mux.Handle("GET /me/singles", verifier.RequireAuth(singles.HandleListMine(pool)))
+		mux.Handle("POST /me/singles", verifier.RequireAuth(singles.HandleAdd(pool, catalogClient)))
+		mux.Handle("PATCH /me/singles/{id}", verifier.RequireAuth(singles.HandleUpdate(pool)))
+		mux.Handle("DELETE /me/singles/{id}", verifier.RequireAuth(singles.HandleRemove(pool)))
+		mux.HandleFunc("GET /users/{username}/singles", singles.HandleListForUser(pool))
+		if catalogClient != nil {
+			// Singles Shop prices follow the market (internal/singles/pricing.go).
+			go singles.RunRepricer(ctx, pool, catalogClient)
+		}
 		placesClient := address.NewAutocompleteClient(cfg.GooglePlacesAPIKey)
 		if placesClient.IsConfigured() {
 			mux.Handle("GET /address/autocomplete", verifier.RequireAuth(address.HandleAutocomplete(placesClient)))
@@ -126,10 +166,24 @@ func main() {
 		mux.Handle("GET /me/offers/sent", verifier.RequireAuth(offer.HandleListSent(pool)))
 		mux.Handle("POST /offers/{id}/accept", verifier.RequireAuth(offer.HandleAccept(pool)))
 		mux.Handle("POST /offers/{id}/decline", verifier.RequireAuth(offer.HandleDecline(pool)))
+
+		mux.Handle("GET /second-chance-offers/{id}", verifier.RequireAuth(secondchance.HandleGet(pool)))
+		mux.Handle("POST /second-chance-offers/{id}/accept", verifier.RequireAuth(secondchance.HandleAccept(pool)))
+		mux.Handle("POST /second-chance-offers/{id}/decline", verifier.RequireAuth(secondchance.HandleDecline(pool)))
 		paymentClient := payment.NewClient(cfg.StripeSecretKey)
 		mailClient := mail.NewClient(cfg.ResendAPIKey, cfg.ClaimsNotifyFrom, cfg.ClaimsNotifyTo)
 		if !mailClient.IsConfigured() {
 			log.Println("RESEND_API_KEY not set — claim human-review email notifications disabled (see apps/api/.env.example)")
+		} else {
+			// KYC level 1's email half (Plan B / CLAUDE.md §7) — a second
+			// Client sharing the same Resend API key/verified domain as
+			// mailClient above, just a different From display name suited
+			// for an email a real user reads rather than an internal ops
+			// alert. `to` is unused (empty) since every call goes through
+			// SendTo's per-call recipient, never Client's own fixed `to`.
+			accountMailClient := mail.NewClient(cfg.ResendAPIKey, cfg.AccountEmailFrom, "")
+			mux.Handle("POST /me/email/start-verify", verifier.RequireAuth(emailverify.HandleStartVerify(pool, accountMailClient)))
+			mux.Handle("POST /me/email/check-verify", verifier.RequireAuth(emailverify.HandleCheckVerify(pool)))
 		}
 		listing.RequireSellerOnboarded = paymentClient.IsConfigured()
 		if !paymentClient.IsConfigured() {
@@ -169,6 +223,8 @@ func main() {
 			mux.Handle("GET /listings/{id}/order", verifier.RequireAuth(order.HandleGetForListing(pool)))
 			mux.Handle("POST /listings/{id}/order/evidence", verifier.RequireAuth(order.HandleAddEvidence(pool)))
 			mux.Handle("POST /listings/{id}/order/ship", verifier.RequireAuth(order.HandleShip(pool)))
+			mux.Handle("POST /listings/{id}/order/release", verifier.RequireAuth(order.HandleReleaseNow(pool, paymentClient)))
+			mux.Handle("POST /listings/{id}/order/request-ship-extension", verifier.RequireAuth(order.HandleRequestShipExtension(pool, paymentClient)))
 			// Dev-only — real auth (RequireAuth), gated to non-production at
 			// runtime inside DevAdvance itself (order.AllowDevAdvance, set
 			// above), same belt-and-suspenders shape as
@@ -216,6 +272,27 @@ func main() {
 			mux.Handle("GET /admin/claims/{id}", verifier.RequireAuth(dispute.HandleAdminGet(pool, cfg.AdminEmails)))
 
 			mux.Handle("GET /admin/metrics", verifier.RequireAuth(metrics.HandleGet(pool, cfg.AdminEmails)))
+
+			// KYC level 2 (internal/kyc, Plan B / CLAUDE.md §7's
+			// chargeback-fraud ban system) — reuses the same paymentClient
+			// every other Stripe-backed route above does, so this is gated
+			// on Stripe being configured at all, not a separate flag.
+			mux.Handle("POST /me/identity/start-verify", verifier.RequireAuth(identity.HandleStart(pool, paymentClient)))
+		}
+
+		if cfg.TwilioAccountSID == "" || cfg.TwilioAuthToken == "" || cfg.TwilioVerifyServiceSID == "" {
+			log.Println("TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_VERIFY_SERVICE_SID not set — phone verification (KYC level 1) disabled (see apps/api/.env.example)")
+		} else {
+			phoneClient := phoneverify.NewClient(cfg.TwilioAccountSID, cfg.TwilioAuthToken, cfg.TwilioVerifyServiceSID)
+			mux.Handle("POST /me/phone/start-verify", verifier.RequireAuth(phoneverify.HandleStartVerify(pool, phoneClient)))
+			mux.Handle("POST /me/phone/check-verify", verifier.RequireAuth(phoneverify.HandleCheckVerify(pool, phoneClient)))
+			// Only enforce the KYC purchase-cap ladder (internal/auction's
+			// bid/buy paths) once level 1 is actually reachable at all —
+			// level 1 requires BOTH phone (this block, already confirmed
+			// configured) AND email (mailClient, checked here too) — see
+			// kyc.Enforce's own doc comment for why enforcing it against an
+			// unreachable level 1 would brick bidding/buying entirely.
+			kyc.Enforce = mailClient.IsConfigured()
 		}
 
 		if cfg.StripeWebhookSecret == "" {
@@ -224,7 +301,7 @@ func main() {
 			// Deliberately NOT wrapped in verifier.RequireAuth — Stripe
 			// authenticates via the Stripe-Signature header, verified
 			// inside HandleStripe itself, not a Supabase JWT.
-			mux.HandleFunc("POST /webhooks/stripe", webhook.HandleStripe(pool, cfg.StripeWebhookSecret, mailClient, cfg.WebOrigin))
+			mux.HandleFunc("POST /webhooks/stripe", webhook.HandleStripe(pool, cfg.StripeWebhookSecret, mailClient, cfg.WebOrigin, cfg.IdentityFingerprintHMACKey))
 		}
 
 		if cfg.CarrierWebhookSecret == "" {
@@ -286,12 +363,17 @@ func main() {
 	// other. Never added in production: WEB_ORIGIN there is the one real
 	// deployed origin, and localhost has no meaning to a real user's browser.
 	corsOrigins := []string{cfg.WebOrigin}
-	if cfg.Environment != "production" && cfg.WebOrigin != "http://localhost:4000" {
+	if devMode && cfg.WebOrigin != "http://localhost:4000" {
 		corsOrigins = append(corsOrigins, "http://localhost:4000")
 	}
 
+	var handler http.Handler = mux
+	if pool != nil && verifier != nil {
+		handler = platform.WithBanGuard(pool, verifier, mux)
+	}
+
 	log.Printf("api listening on :%s (CORS allowing %v)", cfg.Port, corsOrigins)
-	if err := http.ListenAndServe(":"+cfg.Port, platform.WithCORS(corsOrigins, mux)); err != nil {
+	if err := http.ListenAndServe(":"+cfg.Port, platform.WithCORS(corsOrigins, handler)); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }

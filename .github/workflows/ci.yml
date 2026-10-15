@@ -1,0 +1,83 @@
+# Runs on every pull request and every push to main. Branch protection on
+# main should require both jobs ("API (Go)" and "Web (Next.js)") to pass
+# before a PR can merge — that's what keeps broken code out of production.
+#
+# Neither job needs secrets: the Go tests are self-contained, and the web
+# app builds without any NEXT_PUBLIC_* values (it degrades gracefully, see
+# CLAUDE.md §6.12).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same branch cancels the run still going for the old one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    name: API (Go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/api/go.mod
+          cache-dependency-path: apps/api/go.sum
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt -w:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -race ./...
+
+  web:
+    name: Web (Next.js)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build

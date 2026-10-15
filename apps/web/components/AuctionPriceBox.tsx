@@ -3,20 +3,21 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Check, AlertTriangle, Truck, ShieldCheck } from "lucide-react";
+import { Check, AlertTriangle, ShieldCheck, Feather } from "lucide-react";
 import BidBox from "./BidBox";
 import BuyNowButton from "./BuyNowButton";
 import MakeOfferButton from "./MakeOfferButton";
 import SoldBanner from "./SoldBanner";
 import OwnerListingBanner from "./OwnerListingBanner";
 import PaymentCountdown from "./PaymentCountdown";
+import ShippingLine from "./ShippingLine";
 import { getListing, type BidResult } from "@/lib/api";
 import {
   formatPrice,
   formatMsLeft,
   paymentDueAt,
-  shippingCostLabel,
-  shippingMethodLabel,
+  effectiveShipping,
+  DEFAULT_PACKAGE_ESTIMATE_CENTS,
   type Listing,
   type MyBid,
 } from "@/lib/types";
@@ -171,6 +172,55 @@ export default function AuctionPriceBox({
   const youAreWinning = Boolean(currentUserId) && live.highBidderId === currentUserId;
   const hasBid = myMaxBidCents !== undefined;
 
+  // What this listing will ACTUALLY ship as, given the live current bid —
+  // not just what the seller originally chose. Mirrors
+  // apps/api/internal/shipping.UpgradePreset (display-only; the backend
+  // always recomputes the real thing fresh at checkout/close time), so a
+  // low-starting-bid auction that climbs past $100/$250 shows the upgraded
+  // tracked package/signature requirement live, instead of only surfacing
+  // once someone's already won it. When the effective preset differs from
+  // the seller's original one, this listing was never quoted for it (that
+  // quote only ever happens for whatever preset was chosen at Create/
+  // Update time) — falls back to DEFAULT_PACKAGE_ESTIMATE_CENTS in that
+  // case, the exact same fallback shipping.ChargedCents itself uses
+  // server-side for an upgraded order with no real estimate, so this reads
+  // as a normal Ground Advantage estimate ("~$6.00 shipping"), not the
+  // ambiguous "Shipping cost at checkout" a missing estimate used to show.
+  const effective = effectiveShipping(listing.shippingPreset, live.currentPriceCents, listing.requestSignature);
+  const effectiveListing =
+    effective.preset === listing.shippingPreset
+      ? listing
+      : {
+          ...listing,
+          shippingPreset: effective.preset,
+          estimatedShippingCents:
+            effective.preset === "shippo_ground_advantage" ? DEFAULT_PACKAGE_ESTIMATE_CENTS : undefined,
+        };
+
+  // The "Upgraded" badge is for a REAL upgrade bidding caused — compared
+  // against what this listing would have resolved to at its own starting
+  // bid, not against whatever this particular page load happened to catch
+  // mid-session. That's what tells apart the two cases that look identical
+  // from "does effective differ from stored right now":
+  //  - A $0.01-starting auction real bids pushed to $100+: at its
+  //    starting bid, effectiveShipping still resolves to the seller's
+  //    original (envelope) preset — so `original` and `current` genuinely
+  //    differ, and this IS a bidding-driven upgrade, however long ago it
+  //    crossed the line or whether this viewer just loaded the page fresh.
+  //  - A listing whose STARTING bid was already past the bar (a stale
+  //    seller-chosen preset that predates this feature, e.g. a $120
+  //    starting bid still set to Tracked Envelope): `original` already
+  //    resolves the same way `current` does, since both are evaluated
+  //    against a price that was always over the line — no bidding did
+  //    anything here, so no badge.
+  // Keying the block on this (not the poll tick) is what makes the
+  // pop-in replay exactly once, the instant a live bid actually flips it
+  // from false to true, and never again on subsequent polls once it's
+  // already true.
+  const original = effectiveShipping(listing.shippingPreset, listing.startingBidCents ?? 0, listing.requestSignature);
+  const isBidDrivenUpgrade =
+    effective.preset !== original.preset || effective.signatureRequired !== original.signatureRequired;
+
   // Won via regular bidding (not Buy It Now, which already collects
   // payment atomically at purchase time) and not yet paid — matches
   // Bids/Offers' own "Awaiting Payment" treatment (lib/types.ts's
@@ -219,14 +269,41 @@ export default function AuctionPriceBox({
           below it: product decision that Buy It Now shouldn't be the first
           thing a bidder sees above the bidding box and the real shipping
           cost, on an item they might also just want to bid on. */}
-      <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
-        <Truck size={18} />
-        <span>
-          <span className="font-medium text-gray-700">{shippingCostLabel(listing)}</span>
-          {" : "}
-          {shippingMethodLabel(listing)}
-        </span>
+      {/* Keyed on isBidDrivenUpgrade (not the poll tick) so this only
+          remounts — replaying animate-pop-in — the instant it actually
+          flips from false to true, whether that happens live while this
+          page is open or was already true the moment it loaded (a real
+          bidding-driven upgrade shows the badge immediately either way;
+          see isBidDrivenUpgrade's own doc comment above for what it does
+          and doesn't count as "real"). */}
+      <div
+        key={isBidDrivenUpgrade ? "upgraded" : "standard"}
+        className={`mt-4 flex items-center gap-2 text-sm ${
+          isBidDrivenUpgrade ? "animate-pop-in rounded-lg bg-brand-gold/10 px-3 py-2 text-gray-700" : "text-gray-600"
+        }`}
+      >
+        <ShippingLine listing={effectiveListing} size="lg" className="flex-1" />
+        {isBidDrivenUpgrade && (
+          <span className="shrink-0 rounded-full bg-brand-gold/20 px-2 py-0.5 text-[11px] font-semibold text-brand-gold">
+            Upgraded
+          </span>
+        )}
       </div>
+      {effective.signatureRequired && (
+        <div
+          className={`mt-2 flex items-center gap-2 text-xs ${
+            isBidDrivenUpgrade ? "font-medium text-brand-gold" : "text-gray-500"
+          }`}
+        >
+          {/* Same gold as the Quill icon on ListingCard/ListingRow's own
+              badges, always — not tied to isBidDrivenUpgrade the way the
+              text color is, so this icon reads identically everywhere it
+              appears regardless of whether this exact viewing counts as a
+              "just happened" upgrade. */}
+          <Feather size={14} className="text-brand-gold" />
+          Signature required at delivery
+        </div>
+      )}
       <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
         <ShieldCheck size={14} />
         Payment protected — released to the seller after your delivery window

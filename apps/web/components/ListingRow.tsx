@@ -4,9 +4,11 @@ import Link from "next/link";
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Heart, Zap, Check, ChevronLeft, ChevronRight, Truck, ShieldCheck } from "lucide-react";
+import { Heart, Zap, Gavel, Check, ChevronLeft, ChevronRight, ShieldCheck } from "lucide-react";
 import CardArt from "./CardArt";
 import BuyNowButton from "./BuyNowButton";
+import MakeOfferButton from "./MakeOfferButton";
+import ShippingLine from "./ShippingLine";
 import Avatar from "./Avatar";
 import StarRating from "./StarRating";
 import { apiFetch } from "@/lib/api";
@@ -18,7 +20,6 @@ import {
   formatSellerTier,
   listingSoldAt,
   sellerTierIconSrc,
-  shippingDisplayText,
 } from "@/lib/types";
 import { formatDateTime, formatCompactCount } from "@/lib/format";
 import { useMsLeft } from "@/lib/useMsLeft";
@@ -206,6 +207,7 @@ export default function ListingRow({
                     src={url}
                     alt={offset === 0 ? listing.title : ""}
                     fill
+                    sizes="(max-width: 640px) 40vw, 320px"
                     className="object-contain"
                   />
                 </div>
@@ -213,18 +215,42 @@ export default function ListingRow({
             })
           ) : hasPhotos ? (
             <div className="relative h-full w-full">
-              <Image src={photos[0]} alt={listing.title} fill className="object-contain" />
+              <Image
+                src={photos[0]}
+                alt={listing.title}
+                fill
+                sizes="(max-width: 640px) 40vw, 320px"
+                className="object-contain"
+              />
             </div>
           ) : (
             <CardArt game={listing.game} label={listing.title} />
           )}
 
-          {/* The main card is centered in this box (not flush against its
-              left edge), so every control below anchors to CARD_EDGE_PCT —
-              the % inset of the main card's own left/right edge from the
-              box's edge — instead of the box's own corners. */}
-          {listing.format !== "auction" && (
-            <span className="absolute left-[calc(12.5%+0.5rem)] top-2 z-40 inline-flex items-center gap-1 rounded-full bg-brand-success px-2.5 py-1.5 text-xs font-semibold text-white">
+          {/* Anchored to the actual visible photo's own top-left corner —
+              same calc-based positioning the heart button below already
+              uses for its own (right) corner. In carousel mode the real
+              photo is a centered, inset card within a wider square stage
+              (see CARD_PCT's own doc comment), not flush against the
+              stage's edge — a flat left-2 sat over empty stage background
+              to the photo's left instead of over the photo itself, which
+              is exactly the "floating in the middle" bug this fixes. Also
+              now covers the auction case, which previously showed no
+              badge at all. */}
+          {listing.format === "auction" ? (
+            <span
+              className={`absolute top-2 z-40 inline-flex items-center gap-1 rounded-full bg-brand-success px-2.5 py-1.5 text-xs font-semibold text-white ${
+                hasCarousel ? "left-[calc(12.5%+0.5rem)]" : "left-2"
+              }`}
+            >
+              <Gavel size={14} /> Auction{listing.buyItNowPriceCents ? " / Buy It Now" : ""}
+            </span>
+          ) : (
+            <span
+              className={`absolute top-2 z-40 inline-flex items-center gap-1 rounded-full bg-brand-success px-2.5 py-1.5 text-xs font-semibold text-white ${
+                hasCarousel ? "left-[calc(12.5%+0.5rem)]" : "left-2"
+              }`}
+            >
               <Zap size={14} /> Buy It Now
             </span>
           )}
@@ -306,58 +332,164 @@ export default function ListingRow({
       </div>
 
       <div className="col-span-3 flex min-w-0 flex-col">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-sm font-medium uppercase tracking-wide text-brand-gold">
-              {listing.game}
-            </p>
-            <Link href={`/listing/${listing.id}`}>
-              <h3 className="text-lg font-semibold text-gray-900 hover:underline sm:text-xl">
-                {listing.title}
-              </h3>
-            </Link>
-            <p className="mt-0.5 text-sm text-gray-500 sm:text-base">
-              {listing.set}
-              {listing.isGraded
-                ? ` · ${listing.gradingCompany} ${listing.grade}`
-                : ` · ${listing.condition}`}
-            </p>
-          </div>
+        <div className="min-w-0">
+          <p className="text-sm font-medium uppercase tracking-wide text-brand-gold">
+            {listing.game}
+          </p>
+          <Link href={`/listing/${listing.id}`}>
+            <h3 className="text-lg font-semibold text-gray-900 hover:underline sm:text-xl">
+              {listing.title}
+            </h3>
+          </Link>
+          <p className="mt-0.5 text-sm text-gray-500 sm:text-base">
+            {listing.set}
+            {listing.isGraded
+              ? ` · ${listing.gradingCompany} ${listing.grade}`
+              : ` · ${listing.condition}`}
+          </p>
+        </div>
 
-          {/* Buy It Now button, up top where it's immediately reachable —
-              the price itself still shows down with the rest of the price
-              info below. */}
-          {listing.format === "fixed" ? (
-            listing.buyerId ? (
+        {/* Price/bid info with the action button right beside it (to its
+            right, same row) — not pinned to the row's bottom-right, that
+            read as disconnected from the price it actually belongs to.
+            Order below this block is deliberate: shipping right under the
+            price+button row, seller row last, matching how every other
+            listing surface on the site orders the same three facts. */}
+        {listing.format === "auction" && (
+          <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
+            <div className="flex flex-wrap items-start gap-x-7 gap-y-3">
+              <div>
+                <p className="text-xs text-gray-500">{hasEnded ? "Final price" : "Current bid"}</p>
+                <p
+                  className={`text-2xl font-bold sm:text-3xl ${
+                    hasEnded ? "text-brand-urgent" : "text-gray-900"
+                  }`}
+                >
+                  {formatPrice(listing.currentPriceCents ?? 0)}
+                </p>
+                <p className="mt-0.5 text-sm text-gray-500">
+                  {listing.bidCount ?? 0} bids ·{" "}
+                  <span
+                    className={isUrgent ? "font-semibold text-brand-urgent" : ""}
+                    suppressHydrationWarning
+                  >
+                    {hasEnded ? "Ended" : msLeft !== null ? formatMsLeft(msLeft) : ""}
+                  </span>
+                </p>
+                {soldAt && (
+                  <p className="mt-0.5 text-base font-semibold text-gray-900">
+                    Sold {formatDateTime(soldAt)}
+                  </p>
+                )}
+                {myBid && myBid.status === "winning" && !hasEnded && (
+                  <p className="mt-1 flex items-center gap-1 text-xs font-semibold text-brand-success">
+                    <Check size={14} /> Winning
+                  </p>
+                )}
+              </div>
+              {listing.buyItNowPriceCents && !hasEnded && (
+                <div>
+                  <p className="text-xs text-gray-500">Buy It Now</p>
+                  <p className="text-2xl font-bold text-gray-900 sm:text-3xl">
+                    {formatPrice(listing.buyItNowPriceCents)}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Buy It Now (an instant-purchase shortcut) stacks ABOVE
+                Place Bid rather than replacing it — an auction with a
+                Buy It Now price still IS an auction, so a searcher can
+                still just place a bid instead of buying outright, same as
+                real eBay's "Buy It Now or Best Offer/bid" auctions. Place
+                Bid always just gets them onto the real listing page's
+                BidBox — no bid form lives in this compact row. */}
+            {!hasEnded && isLoggedIn && (
+              <div className="flex shrink-0 flex-col items-stretch gap-2">
+                {listing.buyItNowPriceCents && (
+                  <div className="flex items-stretch gap-2">
+                    <BuyNowButton
+                      listingId={listing.id}
+                      priceCents={listing.buyItNowPriceCents}
+                      label="Buy It Now"
+                      variant={listing.allowOffers ? "split" : "default"}
+                      size="lg"
+                    />
+                    {listing.allowOffers && (
+                      <MakeOfferButton
+                        listingId={listing.id}
+                        binPriceCents={listing.buyItNowPriceCents}
+                        minOfferCents={listing.minOfferCents}
+                        variant="icon"
+                        size="lg"
+                      />
+                    )}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => router.push(`/listing/${listing.id}`)}
+                  className="flex items-center justify-center gap-2 rounded-lg border border-brand-navy px-7 py-3.5 text-base font-semibold text-brand-navy transition-colors hover:bg-brand-navy/5"
+                >
+                  <Gavel size={18} /> Place Bid
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {listing.format === "fixed" && (
+          <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
+            <p
+              className={`text-2xl font-bold sm:text-3xl ${
+                listing.buyerId ? "text-brand-urgent" : "text-gray-900"
+              }`}
+            >
+              {formatPrice(listing.soldPriceCents ?? listing.priceCents ?? 0)}
+            </p>
+            {listing.buyerId ? (
               <p className="shrink-0 text-base font-semibold text-gray-900">
                 Sold{soldAt ? ` ${formatDateTime(soldAt)}` : ""}
               </p>
-            ) : isLoggedIn ? (
-              <div className="shrink-0">
-                <BuyNowButton listingId={listing.id} priceCents={listing.priceCents ?? 0} />
-              </div>
-            ) : null
-          ) : (
-            listing.buyItNowPriceCents &&
-            !hasEnded &&
-            isLoggedIn && (
-              <div className="shrink-0">
-                <BuyNowButton
-                  listingId={listing.id}
-                  priceCents={listing.buyItNowPriceCents}
-                  label="Buy It Now"
-                />
-              </div>
-            )
-          )}
-        </div>
+            ) : (
+              isLoggedIn && (
+                <div className="flex shrink-0 items-stretch gap-2">
+                  <BuyNowButton
+                    listingId={listing.id}
+                    priceCents={listing.priceCents ?? 0}
+                    variant={listing.allowOffers ? "split" : "default"}
+                    size="lg"
+                  />
+                  {listing.allowOffers && (
+                    <MakeOfferButton
+                      listingId={listing.id}
+                      binPriceCents={listing.priceCents ?? 0}
+                      minOfferCents={listing.minOfferCents}
+                      variant="icon"
+                      size="lg"
+                    />
+                  )}
+                </div>
+              )
+            )}
+          </div>
+        )}
 
-        <p className="mt-2 flex items-center gap-1.5 text-sm text-gray-500 sm:text-base">
-          <Truck size={15} />
-          {shippingDisplayText(listing)}
-        </p>
+        {/* Same cost/icon/method/signature shape and order as ListingCard's
+            grid cards (shared ShippingLine component) — this row used to
+            render its own single-sentence version (shippingDisplayText),
+            which read and looked different from every other listing
+            surface on the site. Below the bid/price info, above the
+            seller row, per product decision. */}
+        <ShippingLine listing={listing} signatureRequired={listing.requestSignature} className="mt-3" />
 
-        <div className="mt-2 flex w-fit items-center gap-2 rounded-full bg-gray-200 py-1 pl-1 pr-3">
+        {/* Plain text + a top border separator, same as ListingCard's own
+            seller row — no encompassing gray pill/border around the whole
+            thing (that used to make this row look like a different
+            component from every other listing surface). Only the tier
+            badge gets its own small background pill, exactly like
+            ListingCard. */}
+        <div className="mt-3 flex items-center gap-2 border-t border-brand-border pt-3 text-sm text-gray-500">
           {listing.sellerUsername ? (
             // Avatar + name as one click target, not just the text — a
             // profile picture next to a name reads as clickable.
@@ -366,17 +498,17 @@ export default function ListingRow({
               className="group flex items-center gap-2"
             >
               <Avatar label={listing.sellerUsername} size={24} />
-              <span className="text-sm font-medium text-gray-700 group-hover:text-brand-navy group-hover:underline">
+              <span className="font-medium text-gray-700 group-hover:text-brand-navy group-hover:underline">
                 {listing.sellerUsername}
               </span>
             </Link>
           ) : (
             <>
               <Avatar label="Seller" size={24} />
-              <span className="text-sm font-medium text-gray-700">Seller</span>
+              <span className="font-medium text-gray-700">Seller</span>
             </>
           )}
-          <span className="flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-xs font-medium text-gray-600">
+          <span className="flex items-center gap-1 rounded-lg bg-brand-surface px-1.5 py-1 text-xs font-medium text-gray-600">
             {sellerTierIconSrc(listing.sellerTier) ? (
               <Image src={sellerTierIconSrc(listing.sellerTier)!} alt="" width={13} height={13} unoptimized />
             ) : (
@@ -388,8 +520,8 @@ export default function ListingRow({
             <StarRating
               rating={listing.sellerRatingAvg}
               size={12}
-              filledClassName="fill-orange-500 text-black"
-              emptyClassName="fill-transparent text-black"
+              filledClassName="fill-brand-gold text-brand-gold"
+              emptyClassName="text-brand-border"
             />
             {listing.sellerReviewCount > 0
               ? `${listing.sellerRatingAvg.toFixed(1)} (${formatCompactCount(listing.sellerReviewCount)})`
@@ -397,57 +529,6 @@ export default function ListingRow({
           </span>
         </div>
 
-        {listing.format === "auction" && (
-          <div className="mt-4 flex flex-wrap items-start gap-x-7 gap-y-4">
-            <div>
-              <p className="text-xs text-gray-500">{hasEnded ? "Final price" : "Current bid"}</p>
-              <p
-                className={`text-2xl font-bold sm:text-3xl ${
-                  hasEnded ? "text-brand-urgent" : "text-gray-900"
-                }`}
-              >
-                {formatPrice(listing.currentPriceCents ?? 0)}
-              </p>
-              <p className="mt-0.5 text-sm text-gray-500">
-                {listing.bidCount ?? 0} bids ·{" "}
-                <span
-                  className={isUrgent ? "font-semibold text-brand-urgent" : ""}
-                  suppressHydrationWarning
-                >
-                  {hasEnded ? "Ended" : msLeft !== null ? formatMsLeft(msLeft) : ""}
-                </span>
-              </p>
-              {soldAt && (
-                <p className="mt-0.5 text-base font-semibold text-gray-900">
-                  Sold {formatDateTime(soldAt)}
-                </p>
-              )}
-              {myBid && myBid.status === "winning" && !hasEnded && (
-                <p className="mt-1 flex items-center gap-1 text-xs font-semibold text-brand-success">
-                  <Check size={14} /> Winning
-                </p>
-              )}
-            </div>
-            {listing.buyItNowPriceCents && !hasEnded && (
-              <div>
-                <p className="text-xs text-gray-500">Buy It Now</p>
-                <p className="text-2xl font-bold text-gray-900 sm:text-3xl">
-                  {formatPrice(listing.buyItNowPriceCents)}
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {listing.format === "fixed" && (
-          <p
-            className={`mt-4 text-2xl font-bold sm:text-3xl ${
-              listing.buyerId ? "text-brand-urgent" : "text-gray-900"
-            }`}
-          >
-            {formatPrice(listing.soldPriceCents ?? listing.priceCents ?? 0)}
-          </p>
-        )}
       </div>
     </div>
   );

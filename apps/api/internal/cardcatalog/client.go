@@ -3,6 +3,7 @@ package cardcatalog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -47,6 +48,27 @@ type Card struct {
 	ImageURL string   `json:"imageUrl"`
 	Tags     []string `json:"tags"` // Riftbound only; nil for the other games
 	Hidden   bool     `json:"hidden"`
+	// SetCode/PublicCode/CardType are Riftbound's set code ("SFD"), printed
+	// collector code ("SFD-092a/221"), and card type ("Battlefield", ...).
+	SetCode    string `json:"setCode,omitempty"`
+	PublicCode string `json:"publicCode,omitempty"`
+	CardType   string `json:"cardType,omitempty"`
+	// MarketPrice/MarketPriceFoil are TCG Haven's synced TCGplayer market
+	// prices in dollars (0 = unknown) — read-only reference shown to sellers
+	// and used to suggest a Singles Shop price, never used to charge anyone.
+	MarketPrice     float64 `json:"marketPrice"`
+	MarketPriceFoil float64 `json:"marketPriceFoil"`
+	// DisplayNumber is the collector number as printed ("92a", "SP6"),
+	// computed at load time (displayNumber) — Number alone is the bare digit
+	// for Riftbound alt arts, indistinguishable from the base card.
+	DisplayNumber string `json:"displayNumber"`
+	// SinglesEligible is whether this card may be stocked in a Singles Shop
+	// (singlesEligible) — computed at load time so the API is the one place
+	// the rule lives; the frontend only reads the flag.
+	SinglesEligible bool `json:"singlesEligible"`
+	// FoilOnly is whether this card only exists as a foil (foilOnly), so a
+	// Singles Shop sells it as one finish instead of Non-foil + Foil.
+	FoilOnly bool `json:"foilOnly"`
 }
 
 type cacheEntry struct {
@@ -61,6 +83,10 @@ type Client struct {
 
 	mu    sync.RWMutex
 	cache map[string]cacheEntry // keyed by TCG Haven game slug
+
+	registryMu      sync.RWMutex
+	registry        map[string]any // TCG Haven's registry/main doc
+	registryFetched time.Time
 }
 
 // NewClient dials TCG Haven's Firestore project using a service account
@@ -109,6 +135,11 @@ func (c *Client) loadSnapshot(ctx context.Context, gameSlug string) ([]Card, err
 			log.Printf("cardcatalog: skipping unparseable snapshot chunk %s/%s: %v", gameSlug, doc.Ref.ID, err)
 			continue
 		}
+		for i := range chunk {
+			chunk[i].DisplayNumber = displayNumber(chunk[i].Number, chunk[i].PublicCode)
+			chunk[i].SinglesEligible = singlesEligible(chunk[i].Rarity, chunk[i].PublicCode)
+			chunk[i].FoilOnly = foilOnly(gameSlug, chunk[i].Rarity)
+		}
 		cards = append(cards, chunk...)
 	}
 	return cards, nil
@@ -147,4 +178,30 @@ func (c *Client) visibleCards(ctx context.Context, gameSlug string) ([]Card, err
 	c.mu.Unlock()
 
 	return visible, nil
+}
+
+// ErrCardNotFound is returned by Lookup when no visible card with that id
+// exists in the game's catalog (or the game isn't catalog-backed/enabled).
+var ErrCardNotFound = errors.New("cardcatalog: card not found")
+
+// Lookup returns one card by its TCG Haven id within an AuctionHous game —
+// the server-side source of truth for anything that stores a catalog card
+// reference (internal/singles), so a card's name/set/number/image are
+// always resolved from the catalog itself, never trusted from a client.
+func (c *Client) Lookup(ctx context.Context, auctionHousGame, cardID string) (*Card, error) {
+	slug, ok := gameSlug(auctionHousGame)
+	if !ok {
+		return nil, ErrCardNotFound
+	}
+	cards, err := c.visibleCards(ctx, slug)
+	if err != nil {
+		return nil, err
+	}
+	for _, card := range cards {
+		if card.ID == cardID {
+			card.Game = auctionHousGame
+			return &card, nil
+		}
+	}
+	return nil, ErrCardNotFound
 }

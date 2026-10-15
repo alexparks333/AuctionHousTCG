@@ -7,11 +7,11 @@ const TABS = [
   { href: "/account/profile", label: "Profile" },
   { href: "/account/watchlist", label: "Watchlist" },
   { href: "/account/selling", label: "Selling" },
+  { href: "/account/singles", label: "Singles Shop" },
   { href: "/account/transactions", label: "Transactions" },
   { href: "/account/withdraw", label: "Withdraw" },
   { href: "/account/bids-offers", label: "Bids/Offers" },
-  { href: "/account/sold-history", label: "Sold History" },
-  { href: "/account/buy-history", label: "Buy History" },
+  { href: "/account/history", label: "History" },
   { href: "/account/messages", label: "Messages" },
   { href: "/account/settings", label: "Account Settings" },
 ];

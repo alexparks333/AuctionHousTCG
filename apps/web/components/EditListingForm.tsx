@@ -59,6 +59,8 @@ export default function EditListingForm({ listing }: { listing: Listing }) {
   const editable = isFixed || auctionEditable;
 
   const [activeTab, setActiveTab] = useState<Tab>("details");
+  // Read once when the form opens, rather than Date.now() during render.
+  const [openedAt] = useState(() => Date.now());
 
   const [title, setTitle] = useState(listing.title);
   const [setName, setSetName] = useState(listing.set ?? "");
@@ -77,6 +79,7 @@ export default function EditListingForm({ listing }: { listing: Listing }) {
   );
   const [buyItNowEnabled, setBuyItNowEnabled] = useState(Boolean(listing.buyItNowPriceCents));
   const [shippingPreset, setShippingPreset] = useState<ShippingPreset>(listing.shippingPreset);
+  const [requestSignature, setRequestSignature] = useState(listing.requestSignature);
   const [allowOffers, setAllowOffers] = useState(listing.allowOffers);
   const [minOffer, setMinOffer] = useState(
     listing.minOfferCents ? (listing.minOfferCents / 100).toFixed(2) : "",
@@ -116,8 +119,22 @@ export default function EditListingForm({ listing }: { listing: Listing }) {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
-    setSaving(true);
     setError("");
+
+    // Mirrors ShippingPresetPicker's own $100 envelope-disable rule (same
+    // referencePriceCents shape passed to it below) — a seller who had
+    // Tracked Envelope selected and then raised the price past $100 sees
+    // it greyed out in the picker, but nothing auto-clears the still-stale
+    // selection the way the $250 signature bar does, so this catches it
+    // here with a specific message instead of a generic server rejection.
+    const isLetterMechanism = shippingPreset === "free_envelope" || shippingPreset === "tracked_envelope";
+    const referencePriceCents = Math.max(startingBidCents, binPriceCents);
+    if (isLetterMechanism && referencePriceCents >= 10000) {
+      setError("Anything above $100 can't use Tracked Envelope.");
+      return;
+    }
+
+    setSaving(true);
     try {
       await updateListing(listing.id, {
         title,
@@ -129,6 +146,7 @@ export default function EditListingForm({ listing }: { listing: Listing }) {
         minOfferCents: allowOffers ? minOfferCents : 0,
         startingBidCents: auctionEditable ? startingBidCents : undefined,
         shippingPreset,
+        requestSignature,
         imageUrls: photos,
       });
       router.push("/account/selling");
@@ -147,7 +165,7 @@ export default function EditListingForm({ listing }: { listing: Listing }) {
         className="flex items-center gap-3 rounded-xl border border-gray-200 p-3 transition-colors hover:border-brand-navy hover:bg-brand-surface"
       >
         <div className="h-16 w-16 shrink-0 overflow-hidden rounded-lg">
-          <ListingImage src={listing.imageUrls?.[0]} game={listing.game} label={listing.title} />
+          <ListingImage src={listing.imageUrls?.[0]} game={listing.game} label={listing.title} sizes="64px" />
         </div>
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-gray-900">{listing.title}</p>
@@ -167,7 +185,7 @@ export default function EditListingForm({ listing }: { listing: Listing }) {
               label="Ends"
               value={
                 listing.endsAt
-                  ? new Date(listing.endsAt).getTime() <= Date.now()
+                  ? new Date(listing.endsAt).getTime() <= openedAt
                     ? "Ended"
                     : formatDateTime(listing.endsAt)
                   : "—"
@@ -370,8 +388,9 @@ export default function EditListingForm({ listing }: { listing: Listing }) {
                   <ShippingPresetPicker
                     value={shippingPreset}
                     onChange={setShippingPreset}
-                    knownPriceCents={isFixed ? binPriceCents : 0}
                     referencePriceCents={Math.max(startingBidCents, binPriceCents)}
+                    requestSignature={requestSignature}
+                    onRequestSignatureChange={setRequestSignature}
                   />
                 </FormSection>
               ) : (
@@ -400,7 +419,7 @@ export default function EditListingForm({ listing }: { listing: Listing }) {
                       key={url + i}
                       className="relative aspect-[4/5] overflow-hidden rounded-lg border border-gray-200"
                     >
-                      <Image src={url} alt={`Photo ${i + 1}`} fill className="object-cover" />
+                      <Image src={url} alt={`Photo ${i + 1}`} fill sizes="200px" className="object-cover" />
                     </div>
                   ))}
                 </div>

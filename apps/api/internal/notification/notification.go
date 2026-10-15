@@ -44,6 +44,30 @@ const (
 	KindOfferReceived Kind = "offer_received"
 	KindOfferAccepted Kind = "offer_accepted"
 	KindOfferDeclined Kind = "offer_declined"
+
+	// Order-lifecycle failure handling (internal/secondchance,
+	// internal/order's ship-deadline strikes, internal/chargeback). Like
+	// the offer_* kinds above, these never collapse into one row per
+	// listing — see CreateForSecondChance's own doc comment and migration
+	// 0058 — a listing can accumulate more than one of these over its life
+	// (a failed sale, then later a second one), and a seller with several
+	// listings needing attention needs to see each event, not have a later
+	// one silently overwrite an earlier unread one.
+	KindSecondChanceOffer    Kind = "second_chance_offer"    // you're the runner-up on a sale that fell through — you can buy it at your own max bid
+	KindListingNeedsRelist   Kind = "listing_needs_relist"   // your sale fell through and there's no one left to offer it to — relist manually
+	KindChargebackLost       Kind = "chargeback_lost"        // a real bank dispute was lost on one of your sales — you won't be paid for this one
+	KindShipDeadlineWarning  Kind = "ship_deadline_warning"  // you missed a ship-by deadline — first strike in the last 30 days is just a warning
+	KindAccountSuspended     Kind = "account_suspended"      // second missed ship deadline in 30 days — temporary suspension
+	KindShipExtensionGranted Kind = "ship_extension_granted" // the seller bought more time to ship — here's your compensation
+
+	// KindAccountBanned fires once, the moment a real chargeback is filed
+	// against the buyer at all (internal/chargeback.RecordCreated) —
+	// independent of the dispute's eventual outcome, and independent of
+	// KindChargebackLost above (which is a seller-facing payout notice on
+	// RecordStatusChange's later 'lost' path). Tied to the disputed
+	// order's own listing_id purely because every notification row needs
+	// one — this is an account-level event, not a listing-level one.
+	KindAccountBanned Kind = "account_banned"
 )
 
 // isReviewKind reports whether kind belongs to the review partial unique
@@ -77,7 +101,17 @@ type Notification struct {
 	// won/sold/bought: a listing can have several different pending
 	// offers at once, so "the listing" alone doesn't disambiguate which
 	// one this notification is about.
-	OfferID   *string `json:"offerId,omitempty"`
+	OfferID *string `json:"offerId,omitempty"`
+	// SecondChanceOfferID is set on the second_chance_offer kind only —
+	// same disambiguation reasoning as OfferID, routing the frontend
+	// straight to the specific offer rather than just the listing.
+	SecondChanceOfferID *string `json:"secondChanceOfferId,omitempty"`
+	// IsBundle is true when the order this notification's listing belongs
+	// to has checkout add-ons ("Add Singles To Your Order", order_addons) —
+	// whether the listing is the order's primary item or was itself added
+	// on. Derived live, so a "won" notification picks it up once the buyer
+	// pays with singles added. Drives the extra "Bundle" tag in the bell.
+	IsBundle  bool    `json:"isBundle"`
 	ReadAt    *string `json:"readAt"`
 	CreatedAt string  `json:"createdAt"`
 }
@@ -138,6 +172,24 @@ func CreateForOffer(ctx context.Context, db execer, userID string, kind Kind, li
 	return nil
 }
 
+// CreateForSecondChance records one notification for the
+// second_chance_offer kind — a plain insert with no ON CONFLICT target,
+// same reasoning as CreateForOffer: a listing can accumulate more than one
+// of these over its life (one failed sale, then a later one), so
+// collapsing by (user_id, listing_id) would let a later event silently
+// overwrite an earlier still-unread one. second_chance_offer_id
+// disambiguates which specific offer this row is about, same role
+// offer_id plays for the offer_* kinds.
+func CreateForSecondChance(ctx context.Context, db execer, userID string, kind Kind, listingID, secondChanceOfferID string) error {
+	if _, err := db.Exec(ctx, `
+		insert into notifications (user_id, kind, listing_id, second_chance_offer_id)
+		values ($1, $2, $3, $4)
+	`, userID, kind, listingID, secondChanceOfferID); err != nil {
+		return fmt.Errorf("insert second-chance notification: %w", err)
+	}
+	return nil
+}
+
 // ListForUser returns the caller's most recent notifications (newest
 // first) plus their unread count — the unread count is queried separately
 // rather than derived from the capped list, since "47 unread" should still
@@ -145,7 +197,15 @@ func CreateForOffer(ctx context.Context, db execer, userID string, kind Kind, li
 // limit rows.
 func ListForUser(ctx context.Context, pool *pgxpool.Pool, userID string, limit int) ([]Notification, int, error) {
 	rows, err := pool.Query(ctx, `
-		select n.id, n.kind, n.listing_id, l.title, l.game, l.image_urls, n.offer_id, n.read_at, n.created_at
+		select n.id, n.kind, n.listing_id, l.title, l.game, l.image_urls, n.offer_id, n.second_chance_offer_id,
+			exists (
+				select 1 from order_addons a
+				where a.voided_at is null and (
+					a.listing_id = n.listing_id
+					or a.order_id in (select oi.order_id from order_items oi where oi.listing_id = n.listing_id and oi.voided_at is null)
+				)
+			),
+			n.read_at, n.created_at
 		from notifications n
 		join listings l on l.id = n.listing_id
 		where n.user_id = $1
@@ -163,7 +223,7 @@ func ListForUser(ctx context.Context, pool *pgxpool.Pool, userID string, limit i
 		var imageURLs []string
 		var readAt *time.Time
 		var createdAt time.Time
-		if err := rows.Scan(&n.ID, &n.Kind, &n.ListingID, &n.ListingTitle, &n.ListingGame, &imageURLs, &n.OfferID, &readAt, &createdAt); err != nil {
+		if err := rows.Scan(&n.ID, &n.Kind, &n.ListingID, &n.ListingTitle, &n.ListingGame, &imageURLs, &n.OfferID, &n.SecondChanceOfferID, &n.IsBundle, &readAt, &createdAt); err != nil {
 			return nil, 0, fmt.Errorf("scan notification: %w", err)
 		}
 		if len(imageURLs) > 0 {

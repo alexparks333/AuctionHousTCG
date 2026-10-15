@@ -33,6 +33,19 @@ const (
 	ReasonPaymentFraud                 ReasonCode = "payment_fraud"
 	ReasonBuyersRemorse                ReasonCode = "buyers_remorse"
 	ReasonTransitDamage                ReasonCode = "transit_damage"
+	// ReasonNotReceivedTrackingStalled is the one reason code filable
+	// before delivery — while the order is merely shipped, not yet
+	// claim_window (see OpenClaim) — for "there is real tracking, it just
+	// never updated to delivered." Distinct from
+	// ReasonNotReceivedNoTracking ("no tracking at all") and
+	// ReasonNotReceivedTrackingDelivered ("tracking says delivered but I
+	// disagree"), neither of which honestly describes this case. Matches
+	// none of autoAdjudicate's explicit rules below, so it always lands in
+	// human review — genuinely ambiguous evidence (lost in transit? never
+	// actually shipped? buyer lying?) that needs a person, never an
+	// automatic refund. cmd/worker's escalateUndeliveredOrders is the
+	// backstop that files this on the buyer's behalf if they never do.
+	ReasonNotReceivedTrackingStalled ReasonCode = "not_received_tracking_stalled"
 )
 
 // Resolution is what actually happens to the money.

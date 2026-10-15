@@ -6,9 +6,14 @@ import Footer from "@/components/Footer";
 import ListingGallery from "@/components/ListingGallery";
 import ItemSpecifics from "@/components/ItemSpecifics";
 import SellerCard from "@/components/SellerCard";
-import MockCheckout from "@/components/MockCheckout";
-import { getListing, getWatchStatus } from "@/lib/api";
-import { shippingCostLabel, shippingDisplayText, shippingMethodLabel } from "@/lib/types";
+import CheckoutBundle from "@/components/checkout/CheckoutBundle";
+import { getActiveListings, getListing, getUserSingles, getWatchStatus } from "@/lib/api";
+import {
+  ENABLED_GAMES,
+  shippingCostLabel,
+  shippingDisplayText,
+  shippingMethodLabel,
+} from "@/lib/types";
 import { getLocalSession } from "@/lib/session";
 
 // The mock "Purchasing" page a Buy It Now click lands on — deliberately a
@@ -81,7 +86,24 @@ export default async function CheckoutPage({
     redirect(`/listing/${id}`);
   }
 
-  const watchStatus = await getWatchStatus(listing.id, local.accessToken).catch(() => null);
+  // "Add Singles To Your Order": the seller's in-stock Singles Shop plus
+  // their other Buy It Now listings, offered as add-ons to this purchase.
+  // Never fetched for the seller's own listing (they can't buy it at all).
+  const [watchStatus, singles, sellerListings] = await Promise.all([
+    getWatchStatus(listing.id, local.accessToken).catch(() => null),
+    !isOwner && listing.sellerUsername ? getUserSingles(listing.sellerUsername) : Promise.resolve([]),
+    !isOwner
+      ? getActiveListings({ sellerId: listing.sellerId, fixedOnly: true }).catch(() => [])
+      : Promise.resolve([]),
+  ]);
+  const bundleListings = sellerListings.filter(
+    (l) =>
+      l.id !== listing.id &&
+      l.format === "fixed" &&
+      !l.buyerId &&
+      (l.priceCents ?? 0) > 0 &&
+      ENABLED_GAMES.includes(l.game),
+  );
 
   return (
     <div className="flex min-h-screen flex-col bg-brand-surface">
@@ -113,8 +135,62 @@ export default async function CheckoutPage({
             the gallery column stretch far past the listing page's capped
             width, dragging the payment box away from the image with a
             much bigger gap than the listing page ever has. */}
-        <div className="grid gap-8 lg:grid-cols-[minmax(0,48rem)_1fr]">
-          <div className="flex flex-col gap-6">
+        {isOwner ? (
+          <div className="grid gap-8 lg:grid-cols-[minmax(0,48rem)_1fr]">
+            <div className="flex flex-col gap-6">
+              <ListingGallery
+                listingId={listing.id}
+                imageUrls={listing.imageUrls ?? []}
+                watcherCount={watchStatus?.watcherCount ?? listing.watcherCount}
+                initialWatching={watchStatus?.watching ?? false}
+                isLoggedIn
+                game={listing.game}
+                title={listing.title}
+              />
+  
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-brand-gold">
+                  {listing.game}
+                </p>
+                <h1 className="mt-1 text-2xl font-bold text-gray-900">{listing.title}</h1>
+                <p className="mt-1 text-sm text-gray-500">
+                  {listing.set}
+                  {listing.cardNumber && ` · #${listing.cardNumber}`}
+                  {listing.rarity && ` · ${listing.rarity}`}
+                </p>
+              </div>
+  
+              <div>
+                <h2 className="mb-2 text-sm font-semibold text-gray-900">Item specifics</h2>
+                <ItemSpecifics listing={listing} />
+              </div>
+  
+              <div className="flex items-center gap-2 text-xs text-gray-500">
+                <Truck size={14} />
+                {shippingDisplayText(listing)}
+              </div>
+  
+              <SellerCard username={listing.sellerUsername} tier={listing.sellerTier} />
+  </div>
+            <aside>
+              <div className="rounded-xl border border-brand-border bg-white p-5 text-center">
+                <p className="text-sm text-gray-500">
+                  This is your own listing — you can&apos;t buy it.
+                </p>
+              </div>
+            </aside>
+          </div>
+        ) : (
+          <CheckoutBundle
+            listingId={id}
+            priceCents={priceCents}
+            shippingPreset={listing.shippingPreset}
+            shippingMethod={shippingMethodLabel(listing)}
+            shippingCostLabel={shippingCostLabel(listing)}
+            sellerName={listing.sellerUsername ?? "this seller"}
+            singles={singles}
+            bundleListings={bundleListings}
+          >
             <ListingGallery
               listingId={listing.id}
               imageUrls={listing.imageUrls ?? []}
@@ -124,7 +200,7 @@ export default async function CheckoutPage({
               game={listing.game}
               title={listing.title}
             />
-
+  
             <div>
               <p className="text-xs font-medium uppercase tracking-wide text-brand-gold">
                 {listing.game}
@@ -136,40 +212,20 @@ export default async function CheckoutPage({
                 {listing.rarity && ` · ${listing.rarity}`}
               </p>
             </div>
-
+  
             <div>
               <h2 className="mb-2 text-sm font-semibold text-gray-900">Item specifics</h2>
               <ItemSpecifics listing={listing} />
             </div>
-
+  
             <div className="flex items-center gap-2 text-xs text-gray-500">
               <Truck size={14} />
               {shippingDisplayText(listing)}
             </div>
-
+  
             <SellerCard username={listing.sellerUsername} tier={listing.sellerTier} />
-          </div>
-
-          <aside>
-            {isOwner ? (
-              <div className="rounded-xl border border-brand-border bg-white p-5 text-center">
-                <p className="text-sm text-gray-500">
-                  This is your own listing — you can&apos;t buy it.
-                </p>
-              </div>
-            ) : (
-              <div className="sticky top-6">
-                <MockCheckout
-                  listingId={id}
-                  priceCents={priceCents}
-                  shippingPreset={listing.shippingPreset}
-                  shippingMethod={shippingMethodLabel(listing)}
-                  shippingCostLabel={shippingCostLabel(listing)}
-                />
-              </div>
-            )}
-          </aside>
-        </div>
+  </CheckoutBundle>
+        )}
       </div>
 
       <Footer />

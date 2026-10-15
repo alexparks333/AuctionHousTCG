@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -235,7 +236,14 @@ func ChargedCentsLive(ctx context.Context, shippoClient *Client, preset Preset, 
 	}
 	cents, err := shippoClient.QuoteRate(ctx, from, to, fromEmail, toEmail, preset, signatureRequired)
 	if err != nil {
-		log.Printf("shipping: live rate-shop failed, falling back to listing estimate: %v", err)
+		// Logged without Shippo's response body, which can echo back the
+		// buyer's and seller's addresses.
+		var apiErr *shippoAPIError
+		if errors.As(err, &apiErr) {
+			log.Printf("shipping: live rate-shop failed (shippo returned %d), falling back to listing estimate", apiErr.status)
+		} else {
+			log.Printf("shipping: live rate-shop failed, falling back to listing estimate: %v", err)
+		}
 		return ChargedCents(preset, estimatedShippingCents)
 	}
 	return cents
@@ -367,7 +375,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		return fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("shippo returned %d: %s", resp.StatusCode, string(respBody))
+		return &shippoAPIError{status: resp.StatusCode, body: string(respBody)}
 	}
 	if out != nil {
 		if err := json.Unmarshal(respBody, out); err != nil {
@@ -375,4 +383,16 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		}
 	}
 	return nil
+}
+
+// shippoAPIError is a non-2xx Shippo response. Error() keeps the body, since
+// it's shown to the seller buying the label, but log lines should use status
+// only — the body can contain both parties' addresses.
+type shippoAPIError struct {
+	status int
+	body   string
+}
+
+func (e *shippoAPIError) Error() string {
+	return fmt.Sprintf("shippo returned %d: %s", e.status, e.body)
 }

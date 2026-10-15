@@ -23,8 +23,9 @@ import { CSS } from "@dnd-kit/utilities";
 import { uploadListingPhoto, deleteListingPhoto } from "@/lib/storage";
 
 const MAX_PHOTOS = 10;
-const ACCEPT = "image/jpeg,image/png,image/webp";
-const ACCEPTED_TYPES = ACCEPT.split(",");
+// HEIC/HEIF (iPhone) is offered too: prepareImageForUpload converts it to
+// JPEG wherever the browser can decode it, and says so clearly where it can't.
+const ACCEPT = "image/jpeg,image/png,image/webp,image/heic,image/heif";
 
 interface PhotoItem {
   // Stable across the temp-preview -> final-URL swap, so dnd-kit's
@@ -94,8 +95,20 @@ export default function SortablePhotoGrid({
   // storage as-is. There used to be a mandatory per-photo crop modal here;
   // deliberately removed, not just skipped for the bulk case.
   function addFiles(fileList: FileList | File[]) {
-    const files = Array.from(fileList).filter((f) => ACCEPTED_TYPES.includes(f.type));
-    if (files.length === 0) return;
+    const all = Array.from(fileList);
+    // Anything that isn't an image at all (a PDF, a video) is skipped with
+    // a message instead of silently ignored; image types we can't use are
+    // caught per photo by prepareImageForUpload.
+    const files = all.filter((f) => f.type.startsWith("image/") || /\.(heic|heif)$/i.test(f.name));
+    const skipped = all.length - files.length;
+    if (files.length === 0) {
+      setNotice(
+        skipped === 1
+          ? "That file isn't a photo — use a JPEG, PNG, or WebP."
+          : "Those files aren't photos — use JPEG, PNG, or WebP.",
+      );
+      return;
+    }
 
     const remaining = MAX_PHOTOS - items.length;
     if (remaining <= 0) {
@@ -106,7 +119,9 @@ export default function SortablePhotoGrid({
     setNotice(
       accepted.length < files.length
         ? `Only added ${accepted.length} of ${files.length} — ${MAX_PHOTOS} photo max.`
-        : "",
+        : skipped > 0
+          ? `Skipped ${skipped} ${skipped === 1 ? "file that isn't a photo" : "files that aren't photos"}.`
+          : "",
     );
 
     const ids = accepted.map(() => `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -230,10 +245,27 @@ export default function SortablePhotoGrid({
         )}
 
         {items.length === 0 ? (
-          <label className="flex aspect-[16/9] w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-gray-300 transition-colors hover:border-brand-navy hover:bg-brand-surface">
-            <Upload size={32} className="text-gray-400" />
-            <p className="text-sm font-medium text-gray-600">Drag photos here or click to browse</p>
-            <p className="text-xs text-gray-400">Up to {MAX_PHOTOS} photos · JPEG, PNG, or WebP</p>
+          <label className="group flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-3xl border-2 border-dashed border-gray-200 bg-gradient-to-b from-gray-50/80 to-white px-6 py-14 text-center transition-all hover:border-brand-gold/60 hover:from-amber-50/60">
+            <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-brand-gold shadow-md ring-1 ring-gray-100 transition-transform group-hover:-translate-y-1">
+              <Upload size={26} />
+            </span>
+            <span>
+              <span className="block text-base font-bold text-gray-900">Drag photos here</span>
+              <span className="block text-sm text-gray-500">or click to browse your files</span>
+            </span>
+            <span className="rounded-full bg-brand-navy px-5 py-2 text-sm font-semibold text-white shadow-md transition-colors group-hover:bg-brand-navy-light">
+              Choose photos
+            </span>
+            <span className="mt-1 flex flex-wrap justify-center gap-1.5 text-[11px] font-medium text-gray-500">
+              {["Front", "Back", "Corner close-ups"].map((t) => (
+                <span key={t} className="rounded-full bg-white px-2.5 py-1 ring-1 ring-gray-200">
+                  {t}
+                </span>
+              ))}
+            </span>
+            <span className="text-xs text-gray-400">
+              Up to {MAX_PHOTOS} photos · JPEG, PNG, or WebP · big photos are resized for you
+            </span>
             <input
               type="file"
               accept={ACCEPT}
@@ -265,7 +297,7 @@ export default function SortablePhotoGrid({
                 ))}
 
                 {canAddMore && (
-                  <label className="flex aspect-[4/5] cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-gray-300 text-gray-400 transition-colors hover:border-brand-navy hover:bg-brand-surface hover:text-brand-navy">
+                  <label className="flex aspect-[4/5] cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-gray-200 bg-gray-50/70 text-gray-400 transition-colors hover:border-brand-gold/60 hover:bg-amber-50/50 hover:text-brand-gold">
                     <Plus size={22} />
                     <span className="text-xs font-medium">Add photos</span>
                     <input
@@ -286,7 +318,7 @@ export default function SortablePhotoGrid({
             <DragOverlay>
               {activeItem ? (
                 <div className="relative aspect-[4/5] w-full scale-105 overflow-hidden rounded-xl border-2 border-brand-navy bg-white shadow-2xl">
-                  <Image src={activeItem.url} alt="" fill className="object-cover" />
+                  <Image src={activeItem.url} alt="" fill sizes="220px" className="object-cover" />
                 </div>
               ) : null}
             </DragOverlay>
@@ -341,7 +373,7 @@ function SortableTile({
         item.uploading ? "" : "cursor-grab active:cursor-grabbing"
       } ${isDragging ? "z-20 border-brand-navy opacity-40" : "border-gray-300"}`}
     >
-      <Image src={item.url} alt={`Photo ${position}`} fill className="object-cover" />
+      <Image src={item.url} alt={`Photo ${position}`} fill sizes="220px" className="object-cover" />
 
       {item.uploading && (
         <div className="absolute inset-0 flex items-center justify-center bg-white/60 backdrop-blur-[1px]">

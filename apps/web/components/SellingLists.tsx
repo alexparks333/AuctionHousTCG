@@ -39,6 +39,7 @@ function ListingGrid({
   currentUserId,
   showOutcome,
   awaitingShipmentIds,
+  bundleListingIds,
 }: {
   listings: Listing[];
   watchedIds: Set<string>;
@@ -50,6 +51,7 @@ function ListingGrid({
   currentUserId?: string;
   showOutcome?: boolean;
   awaitingShipmentIds?: Set<string>;
+  bundleListingIds?: Set<string>;
 }) {
   const gridRef = useRef<HTMLDivElement>(null);
   // 4 is just a reasonable pre-measurement default (matches the lg
@@ -146,6 +148,7 @@ function ListingGrid({
             // matching the product decision that a sold listing is
             // permanently done, not just usually done.
             ownerMenuReadOnly={showOutcome}
+            isBundle={Boolean(showOutcome && bundleListingIds?.has(listing.id))}
           />
         </div>
       ))}
@@ -179,6 +182,7 @@ export default function SellingLists({
   isLoggedIn,
   currentUserId,
   awaitingShipmentIds,
+  bundleListingIds,
 }: {
   mySelling: Listing[];
   mySold: Listing[];
@@ -186,6 +190,7 @@ export default function SellingLists({
   isLoggedIn: boolean;
   currentUserId?: string;
   awaitingShipmentIds: Set<string>;
+  bundleListingIds?: Set<string>;
 }) {
   const [mode, setMode] = useState<Mode>("active");
 
@@ -241,6 +246,7 @@ export default function SellingLists({
           currentUserId={currentUserId}
           showOutcome
           awaitingShipmentIds={awaitingShipmentIds}
+          bundleListingIds={bundleListingIds}
         />
       )}
     </div>

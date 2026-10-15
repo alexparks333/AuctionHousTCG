@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { Camera, Check, Loader2 } from "lucide-react";
 import { getPhotoUploadSessionStatus, uploadPhotoToSession } from "@/lib/api";
+import { prepareImageForUpload } from "@/lib/imageResize";
 
 interface UploadedPhoto {
   id: string;
@@ -32,7 +33,10 @@ export default function PhoneUploadClient({ sessionId }: { sessionId: string }) 
     const previewUrl = URL.createObjectURL(file);
     setPhotos((prev) => [...prev, { id, previewUrl, uploading: true, failed: false }]);
 
-    uploadPhotoToSession(sessionId, file)
+    // Shrunk on the phone before sending (2500px long side, JPEG) — a
+    // full-size camera photo is several MB over mobile data otherwise.
+    prepareImageForUpload(file)
+      .then((small) => uploadPhotoToSession(sessionId, small))
       .then(() => {
         setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, uploading: false } : p)));
       })

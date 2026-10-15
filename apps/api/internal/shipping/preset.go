@@ -130,38 +130,33 @@ const TrackedEnvelopeCents = 156
 // thresholds (product decision): $100 crosses into mandatory package
 // mechanism — Pitney Bowes' envelope tracking is real but only proves
 // transit through the postal system, not delivery, which isn't strong
-// enough evidence once real money is at stake. $500 crosses into
-// mandatory signature confirmation on top of that (a package-only
-// concept — see order.CreateInput's doc comment on SignatureRequired).
+// enough evidence once real money is at stake. $250 crosses into mandatory
+// signature confirmation on top of that (a package-only concept — see
+// order.CreateInput's doc comment on SignatureRequired). One threshold,
+// checked against two different prices depending on where it's called
+// from: internal/listing.Create/Update check it against the listing's own
+// starting bid/Buy It Now price (via RequestSignatureFromPrice, below) to
+// lock the Sell wizard's checkbox at listing time; UpgradePreset checks it
+// again against the FINAL sale price at checkout/close time, since a
+// $0.99-starting auction that climbs to $270 needs the exact same
+// treatment a listing seeded at $270 from the start would get — used to be
+// two separate constants ($250 listing-time / $500 final-price) until a
+// $270 auction close was found to slip through requiring no signature at
+// all, which is exactly the gap this unification closes.
 const (
 	PackageRequiredCents   = 10000
-	SignatureRequiredCents = 50000
+	SignatureRequiredCents = 25000
 )
 
-// SignatureRequestThresholdCents is a second, independent signature-related
-// threshold — distinct from SignatureRequiredCents above, which is based on
-// the FINAL sale price and only known at checkout/close time. This one is
-// a listing-time heuristic: once a listing's own starting bid or Buy It Now
-// price crosses $250, the Sell wizard locks "Signature Required" on and the
-// seller can't opt out (product decision — a seller listing something this
-// valuable doesn't get a choice, the same way $500 final sale price isn't a
-// choice either). Recomputed fresh by internal/listing.Create/Update from
-// whatever price the seller actually submitted (never trusted from the
-// client — same "server derives it" rule as everywhere else in this
-// package) and stored on listings.request_signature, which UpgradePreset
-// below ORs together with the final-price rule: a low-starting-bid auction
-// that never crosses $500 at sale can still ship signature-required if the
-// seller's own listing-time price already crossed this bar.
-const SignatureRequestThresholdCents = 25000
-
 // RequestSignatureFromPrice is the shared "does this price cross the
-// listing-time signature bar" check — internal/listing.Create/Update both
-// call this against whichever price the seller actually submitted
-// (starting bid or Buy It Now, whichever is higher/known), so the decision
-// is made once, in one place, rather than each caller re-deriving the same
-// comparison against SignatureRequestThresholdCents.
+// signature bar" check — internal/listing.Create/Update call this against
+// whichever price the seller actually submitted (starting bid or Buy It
+// Now, whichever is higher/known) to lock the listing-time checkbox;
+// UpgradePreset re-checks the same threshold against the final sale price
+// directly rather than calling this, since by then there's a real
+// finalAmountCents to compare instead of a "best known so far" one.
 func RequestSignatureFromPrice(referencePriceCents int64) bool {
-	return referencePriceCents >= SignatureRequestThresholdCents
+	return referencePriceCents >= SignatureRequiredCents
 }
 
 // RequiredMechanism derives the minimum mechanism an order's final charged
@@ -184,16 +179,17 @@ func RequiredMechanism(amountCents int64) Mechanism {
 // auction that closes above $100 upgrades to free_bubble_mailer (still
 // free to the buyer, the seller just absorbs a real package rate instead
 // of envelope postage) rather than shippo_ground_advantage. A
-// free_bubble_mailer/free_box order crossing $500 stays exactly as it is
+// free_bubble_mailer/free_box order crossing $250 stays exactly as it is
 // mechanism-wise — already package — just with signatureRequired now true.
 //
 // sellerRequestedSignature is the listing's own stored request_signature
 // (internal/listing.Create/Update, via RequestSignatureFromPrice) — ORed
 // with the final-price rule below, never the only input, since a final
-// sale price crossing $500 must always require a signature regardless of
-// what the listing-time price happened to be (a $10 starting-bid auction
-// that closes at $600 gets no seller-side signal at all, but still needs
-// one).
+// sale price crossing $250 must always require a signature regardless of
+// what the listing-time price happened to be (a $0.99-starting auction
+// that closes at $270 gets no seller-side signal at all — it started well
+// under the listing-time bar — but still needs one, since $270 is $270
+// regardless of where the bidding began).
 func UpgradePreset(chosen Preset, finalAmountCents int64, sellerRequestedSignature bool) (resolved Preset, signatureRequired bool) {
 	resolved = chosen
 	if RequiredMechanism(finalAmountCents) == MechanismPackage && chosen.Mechanism() == MechanismLetter {
@@ -236,4 +232,26 @@ func ChargedCents(preset Preset, estimatedShippingCents *int64) int64 {
 		return *estimatedShippingCents
 	}
 	return DefaultPackageEstimateCents
+}
+
+// EnvelopeMaxCards is the most cards an order can ship in an envelope
+// (letter mechanism) — the primary card plus every Singles Shop single and
+// add-on listing bundled onto it at checkout. A tracked envelope is capped
+// at USPS's 3.5oz nonmachinable-letter weight, and past roughly ten
+// sleeved cards (plus the toploader/cardboard protecting them) a bundle
+// stops fitting safely, so it switches to a tracked package instead.
+const EnvelopeMaxCards = 10
+
+// UpgradeForItemCount applies the bundle-size rule on top of UpgradePreset:
+// an order with more than EnvelopeMaxCards cards can't ship as a letter,
+// whatever the seller chose. Unlike UpgradePreset's price rule, this
+// upgrades even a free envelope to the paid shippo_ground_advantage
+// package — an explicit product decision: the seller's "free shipping"
+// promise covered the one card they listed, not a large bundle the buyer
+// chose to add, so the buyer pays the package rate for it.
+func UpgradeForItemCount(preset Preset, itemCount int) Preset {
+	if itemCount > EnvelopeMaxCards && preset.Mechanism() == MechanismLetter {
+		return PresetShippoGroundAdvantage
+	}
+	return preset
 }

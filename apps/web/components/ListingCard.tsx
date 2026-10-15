@@ -12,23 +12,21 @@ import {
   ChevronLeft,
   ChevronRight,
   ShieldCheck,
-  Mail,
-  Package,
-  Truck,
   MoreVertical,
   Pencil,
   Trash2,
   X,
 } from "lucide-react";
+import BundleTag from "@/components/BundleTag";
 import ListingImage from "./ListingImage";
 import BuyNowButton from "./BuyNowButton";
 import MakeOfferButton from "./MakeOfferButton";
 import StarRating from "./StarRating";
-import { apiFetch, cancelListing, ApiError } from "@/lib/api";
+import ShippingLine from "./ShippingLine";
+import { apiFetch, cancelListing, getListing, ApiError } from "@/lib/api";
 import {
   type Listing,
   type MyBid,
-  type ShippingPreset,
   type EndListingAction,
   type EndListingReason,
   END_LISTING_REASON_LABELS,
@@ -37,7 +35,8 @@ import {
   formatSellerTier,
   listingSoldAt,
   sellerTierIconSrc,
-  shippingBadge,
+  effectiveShipping,
+  DEFAULT_PACKAGE_ESTIMATE_CENTS,
 } from "@/lib/types";
 
 // Mirrors apps/api/internal/auction.endEarlyCutoff exactly — real eBay's
@@ -47,19 +46,6 @@ import {
 // generic error after a failed attempt); the backend is still the real
 // authority if this clock is ever stale by the time the request lands.
 const END_EARLY_CUTOFF_MS = 12 * 60 * 60 * 1000;
-
-// The physical container a listing ships in — envelope-based presets share
-// Mail, box/bubble-mailer presets share Package, and shippo_ground_advantage
-// (a real tracked parcel, not an envelope) gets Truck. Kept here rather than
-// in lib/types.ts since that module is otherwise plain data/string helpers,
-// no React/lucide imports.
-const SHIPPING_PRESET_ICONS: Record<ShippingPreset, typeof Mail> = {
-  free_envelope: Mail,
-  tracked_envelope: Mail,
-  free_bubble_mailer: Package,
-  free_box: Package,
-  shippo_ground_advantage: Truck,
-};
 import { formatDateTime, formatCompactCount } from "@/lib/format";
 import { useMsLeft } from "@/lib/useMsLeft";
 import { usePokeCelebrations } from "./CelebrationWatcher";
@@ -93,6 +79,7 @@ export default function ListingCard({
   hideActions = false,
   ownerMenu = false,
   ownerMenuReadOnly = false,
+  isBundle = false,
 }: {
   listing: Listing;
   initialWatching?: boolean;
@@ -141,6 +128,10 @@ export default function ListingCard({
   // UI here offered, so a live menu on a sold card could only ever end in
   // an error). Meaningless when ownerMenu is false.
   ownerMenuReadOnly?: boolean;
+  // Sold as part of a bundle ("Add Singles To Your Order") — shows the
+  // Bundle tag next to the title. Only the Selling page's History grid
+  // sets this.
+  isBundle?: boolean;
 }) {
   const router = useRouter();
   const [watching, setWatching] = useState(initialWatching);
@@ -270,6 +261,56 @@ export default function ListingCard({
   // sold, and must never render a sale date (see listingSoldAt's own doc).
   const soldAt = listingSoldAt(listing);
 
+  // Live current price/bid count for auction-format cards — the same
+  // eventual-consistency poll AuctionPriceBox runs on the detail page,
+  // mirrored here so a homepage/grid card doesn't sit showing a stale
+  // "Tracked Envelope" (or a stale bid count) while someone bids this
+  // auction's price past $100/$250 on a different tab. Never runs for a
+  // fixed-price or already-ended listing — nothing about either changes on
+  // its own. bidCount only ever increases — same monotonic guard as
+  // AuctionPriceBox's poll, so a slow response landing after a newer bid
+  // can't flicker the display back to stale numbers.
+  const [liveAuction, setLiveAuction] = useState({
+    currentPriceCents: listing.currentPriceCents ?? listing.startingBidCents ?? 0,
+    bidCount: listing.bidCount ?? 0,
+  });
+  useEffect(() => {
+    if (listing.format !== "auction" || hasEnded) return;
+    const id = setInterval(async () => {
+      try {
+        const fresh = await getListing(listing.id);
+        if (!fresh) return;
+        setLiveAuction((current) =>
+          (fresh.bidCount ?? 0) >= current.bidCount
+            ? {
+                currentPriceCents: fresh.currentPriceCents ?? current.currentPriceCents,
+                bidCount: fresh.bidCount ?? current.bidCount,
+              }
+            : current,
+        );
+      } catch {
+        // Best-effort — a missed poll just gets retried next interval.
+      }
+    }, 2000);
+    return () => clearInterval(id);
+  }, [listing.id, listing.format, hasEnded]);
+
+  // What this listing will ACTUALLY ship as, given the live current bid —
+  // see AuctionPriceBox's identical doc comment for the full reasoning
+  // (mirrors apps/api/internal/shipping.UpgradePreset, display-only).
+  const effective =
+    listing.format === "auction"
+      ? effectiveShipping(listing.shippingPreset, liveAuction.currentPriceCents, listing.requestSignature)
+      : { preset: listing.shippingPreset, signatureRequired: listing.requestSignature, upgraded: false };
+  const effectiveListing =
+    effective.preset === listing.shippingPreset
+      ? listing
+      : {
+          ...listing,
+          shippingPreset: effective.preset,
+          estimatedShippingCents:
+            effective.preset === "shippo_ground_advantage" ? DEFAULT_PACKAGE_ESTIMATE_CENTS : undefined,
+        };
   // Only animate the transition into "ended" — a card that's already
   // ended the moment it first mounts (shouldn't happen where removeOnEnd
   // is set, since those grids only ever hold active listings, but is the
@@ -490,11 +531,14 @@ export default function ListingCard({
           <p className="text-xs font-medium uppercase tracking-wide text-brand-gold">
             {listing.game}
           </p>
-          <Link href={`/listing/${listing.id}`}>
-            <h3 className="line-clamp-2 text-sm font-semibold text-gray-900 hover:underline">
-              {listing.title}
-            </h3>
-          </Link>
+          <div className="flex items-start gap-1.5">
+            <Link href={`/listing/${listing.id}`} className="min-w-0 flex-1">
+              <h3 className="line-clamp-2 text-sm font-semibold text-gray-900 hover:underline">
+                {listing.title}
+              </h3>
+            </Link>
+            {isBundle && <BundleTag />}
+          </div>
           <p className="mt-0.5 text-xs text-gray-500">
             {listing.set}
             {listing.isGraded
@@ -508,10 +552,10 @@ export default function ListingCard({
             <div>
               <p className="text-[11px] text-gray-500">{hasEnded ? "Final price" : "Current bid"}</p>
               <p className={`text-lg font-bold ${hasEnded ? "text-brand-urgent" : "text-gray-900"}`}>
-                {formatPrice(listing.currentPriceCents ?? 0)}
+                {formatPrice(liveAuction.currentPriceCents)}
               </p>
               <p className="flex items-center justify-between text-xs">
-                <span className="text-gray-500">{listing.bidCount ?? 0} bids</span>
+                <span className="text-gray-500">{liveAuction.bidCount} bids</span>
                 <span
                   className={isUrgent ? "font-semibold text-brand-urgent" : "text-gray-500"}
                   // The server renders this at request time; hydration
@@ -536,7 +580,11 @@ export default function ListingCard({
                   <Check size={12} /> Top bidder · up to {formatPrice(myBid.myMaxBidCents)}
                 </p>
               )}
-              <ShippingLine listing={listing} className="mt-1" />
+              <ShippingLine
+                listing={effectiveListing}
+                signatureRequired={effective.signatureRequired}
+                className="mt-1"
+              />
               {listing.buyItNowPriceCents && !hasEnded && isLoggedIn && !hideActions && (
                 <div className="mt-2 flex items-stretch gap-1.5">
                   <BuyNowButton
@@ -587,7 +635,7 @@ export default function ListingCard({
               >
                 {formatPrice(listing.soldPriceCents ?? listing.priceCents ?? 0)}
               </p>
-              <ShippingLine listing={listing} />
+              <ShippingLine listing={listing} signatureRequired={listing.requestSignature} />
               {listing.buyerId ? (
                 <p className="mt-2 text-sm font-semibold text-gray-900">
                   Sold{soldAt ? ` ${formatDateTime(soldAt)}` : ""}
@@ -918,19 +966,3 @@ export default function ListingCard({
   );
 }
 
-// "+$1.56 · [envelope icon] Tracked Envelope" — the cost from
-// shippingBadge, a container icon keyed off shippingPreset, then the
-// method name, so a buyer sees what it physically ships in without
-// clicking into the listing.
-function ShippingLine({ listing, className = "" }: { listing: Listing; className?: string }) {
-  const { costLabel, methodLabel } = shippingBadge(listing);
-  const Icon = SHIPPING_PRESET_ICONS[listing.shippingPreset];
-  return (
-    <p className={`flex items-center gap-1 text-xs text-gray-500 ${className}`}>
-      {costLabel && <span>{costLabel}</span>}
-      {costLabel && <span aria-hidden="true">·</span>}
-      <Icon size={12} className="shrink-0" />
-      <span className="truncate">{methodLabel}</span>
-    </p>
-  );
-}

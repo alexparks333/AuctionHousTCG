@@ -58,6 +58,22 @@ type Stats struct {
 	Tag           *string `json:"tag"`
 	ReviewCount   int     `json:"reviewCount"`
 	AverageRating float64 `json:"averageRating"`
+	// Every review of this buyer, newest first — the seller profile's
+	// "Buyer Reviews" tab (star breakdown from all of them, the written
+	// ones listed). Public like the aggregate above; no order ids.
+	Reviews []PublicReview `json:"reviews"`
+}
+
+// PublicReview is one seller's review of a buyer as shown on the buyer's
+// public profile.
+type PublicReview struct {
+	ID               string  `json:"id"`
+	ReviewerUsername *string `json:"reviewerUsername"`
+	ListingTitle     string  `json:"listingTitle"`
+	Rating           float64 `json:"rating"`
+	Tag              string  `json:"tag"`
+	Comment          *string `json:"comment"`
+	CreatedAt        string  `json:"createdAt"`
 }
 
 func validTag(t string) bool { return validTags[t] }
@@ -317,7 +333,15 @@ func StatsFor(ctx context.Context, pool *pgxpool.Pool, buyerID string) (*Stats, 
 		stats.ClaimsPct = float64(claimed) / float64(buysMade) * 100
 	}
 
-	rows, err := pool.Query(ctx, `select rating, tag from buyer_reviews where buyer_id = $1`, buyerID)
+	rows, err := pool.Query(ctx, `
+		select r.id, u.username, coalesce(l.title, ''), r.rating, r.tag, r.comment, r.created_at
+		from buyer_reviews r
+		left join users u on u.id = r.reviewer_id
+		left join order_items oi on oi.order_id = r.order_id
+		left join listings l on l.id = oi.listing_id
+		where r.buyer_id = $1
+		order by r.created_at desc
+	`, buyerID)
 	if err != nil {
 		return nil, fmt.Errorf("query buyer reviews: %w", err)
 	}
@@ -325,15 +349,18 @@ func StatsFor(ctx context.Context, pool *pgxpool.Pool, buyerID string) (*Stats, 
 
 	tagCounts := map[string]int{}
 	var ratingTotal float64
+	stats.Reviews = []PublicReview{}
 	for rows.Next() {
-		var rating float64
-		var tag string
-		if err := rows.Scan(&rating, &tag); err != nil {
+		var rv PublicReview
+		var createdAt time.Time
+		if err := rows.Scan(&rv.ID, &rv.ReviewerUsername, &rv.ListingTitle, &rv.Rating, &rv.Tag, &rv.Comment, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan buyer review: %w", err)
 		}
-		ratingTotal += rating
-		tagCounts[tag]++
+		rv.CreatedAt = createdAt.Format(time.RFC3339)
+		ratingTotal += rv.Rating
+		tagCounts[rv.Tag]++
 		stats.ReviewCount++
+		stats.Reviews = append(stats.Reviews, rv)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

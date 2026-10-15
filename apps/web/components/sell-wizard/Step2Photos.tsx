@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { ArrowLeft, ArrowRight, Camera } from "lucide-react";
+import StepHeader, { StepFooter, primaryButtonClass, secondaryButtonClass } from "./StepHeader";
 import PhoneUploadPanel from "./PhoneUploadPanel";
 import SortablePhotoGrid from "./SortablePhotoGrid";
 import type { WizardData, UpdateField } from "../SellWizard";
@@ -23,16 +25,11 @@ export default function Step2Photos({
   const [phonePhotos, setPhonePhotos] = useState<string[]>([]);
 
   return (
-    <div className="flex flex-col gap-4">
-      <div>
-        <h2 className="text-xl font-semibold text-gray-900">Add photos</h2>
-        <p className="mt-1 text-sm text-gray-500">
-          Clear, well-lit photos build buyer trust and cut down on condition disputes. At
-          least one photo is required. Drag multiple photos in at once, then drag them
-          into the order you want — the first is the cover photo shown everywhere on the
-          site.
-        </p>
-      </div>
+    <div className="flex flex-col gap-6">
+      <StepHeader icon={<Camera size={20} />} step={2} title="Add photos">
+        Clear, well-lit photos build buyer trust and cut down on condition disputes. Add at least one, then
+        drag them into order — the first is your cover photo.
+      </StepHeader>
 
       <PhoneUploadPanel onPhotosFound={setPhonePhotos} />
 
@@ -42,23 +39,15 @@ export default function Step2Photos({
         externalPhotos={phonePhotos}
       />
 
-      <div className="mt-2 flex justify-between">
-        <button
-          type="button"
-          onClick={onBack}
-          className="rounded-full border border-gray-300 px-6 py-2.5 text-sm font-semibold text-gray-700 transition-colors hover:bg-brand-surface"
-        >
-          Back
+      <StepFooter>
+        <button type="button" onClick={onBack} className={secondaryButtonClass}>
+          <ArrowLeft size={16} /> Back
         </button>
-        <button
-          type="button"
-          disabled={!canProceed}
-          onClick={onNext}
-          className="rounded-full bg-brand-gold px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-brand-gold-light disabled:cursor-not-allowed disabled:opacity-40"
-        >
+        <button type="button" disabled={!canProceed} onClick={onNext} className={primaryButtonClass}>
           Continue to price
+          <ArrowRight size={16} className="transition-transform group-hover:translate-x-0.5" />
         </button>
-      </div>
+      </StepFooter>
     </div>
   );
 }

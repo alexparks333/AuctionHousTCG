@@ -18,6 +18,7 @@ export function useUsernameAvailability(username: string, skipValue?: string): U
 
   useEffect(() => {
     if (debounced === "") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- resets to idle when the field is emptied
       setStatus("idle");
       return;
     }

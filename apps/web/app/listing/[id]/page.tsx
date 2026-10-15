@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { ChevronRight, ShieldCheck, Truck } from "lucide-react";
+import { ChevronRight, ShieldCheck, Feather } from "lucide-react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import ListingGallery from "@/components/ListingGallery";
@@ -27,9 +27,10 @@ import {
   type Order,
   type Offer,
 } from "@/lib/api";
-import { formatPrice, shippingCostLabel, shippingMethodLabel, type MyBid } from "@/lib/types";
+import { formatPrice, type MyBid } from "@/lib/types";
 import { getLocalSession } from "@/lib/session";
 import ShippingLabelControl from "@/components/ShippingLabelControl";
+import ShippingLine from "@/components/ShippingLine";
 
 export default async function ListingPage({
   params,
@@ -243,14 +244,15 @@ export default async function ListingPage({
                   fixed-price branch above still needs it rendered here. */}
               {listing.format !== "auction" && (
                 <>
-                  <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
-                    <Truck size={18} />
-                    <span>
-                      <span className="font-medium text-gray-700">{shippingCostLabel(listing)}</span>
-                      {" : "}
-                      {shippingMethodLabel(listing)}
-                    </span>
-                  </div>
+                  <ShippingLine listing={listing} size="lg" className="mt-4 text-gray-600" />
+                  {listing.requestSignature && (
+                    <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+                      {/* Same gold as the Quill icon on ListingCard/
+                          ListingRow's own badges. */}
+                      <Feather size={14} className="text-brand-gold" />
+                      Signature required at delivery
+                    </div>
+                  )}
                   <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
                     <ShieldCheck size={14} />
                     Payment protected — released to the seller after your delivery window

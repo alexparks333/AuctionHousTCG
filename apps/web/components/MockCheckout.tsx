@@ -12,6 +12,7 @@ import {
   getSavedCardsClient,
   getSavedBanksClient,
   ApiError,
+  type CheckoutAddonRequest,
   type CheckoutIntent,
   type SavedCard,
   type SavedBank,
@@ -20,7 +21,8 @@ import { AddCardForm } from "@/components/SavedCardsManager";
 import { AddBankForm } from "@/components/SavedBanksManager";
 import ShippingAddressGate from "@/components/ShippingAddressGate";
 import { getStripe, isStripeConfigured } from "@/lib/stripe";
-import { formatPrice, type ShippingPreset } from "@/lib/types";
+import { emitAddonsUnavailable } from "@/lib/checkoutEvents";
+import { ENVELOPE_MAX_CARDS, formatPrice, type ShippingPreset } from "@/lib/types";
 
 // Envelope for the two letter-mechanism presets (internal/shipping's own
 // Mechanism split, CLAUDE.md §6.18), a box for everything that actually
@@ -50,9 +52,24 @@ export default function MockCheckout({
   shippingPreset,
   shippingMethod,
   shippingCostLabel,
+  addons = [],
+  addonsPreviewCents = 0,
+  addedCards = 0,
+  addonsVersion = 0,
 }: {
   listingId: string;
   priceCents: number;
+  // "Add Singles To Your Order" (CheckoutBundle/AddSinglesBar): the
+  // selected add-ons, sent with every checkout-intent request so the server
+  // prices them into the payment. addonsPreviewCents/addedCards are the
+  // client-side preview shown before (or while re-fetching) a real intent.
+  addons?: CheckoutAddonRequest[];
+  addonsPreviewCents?: number;
+  addedCards?: number;
+  // Bumped by CheckoutBundle each time it re-syncs the seller's stock after
+  // a sold-out add-on — forces a fresh checkout intent even when the
+  // trimmed selection happens to look the same (e.g. only a price moved).
+  addonsVersion?: number;
   // Shown right under "Item price," before the buyer has even confirmed
   // an address or a real checkout intent exists — a real seller/buyer
   // asked for this specifically: knowing the shipping method and its cost
@@ -66,7 +83,12 @@ export default function MockCheckout({
   shippingMethod: string;
   shippingCostLabel: string;
 }) {
-  const ShippingMethodIcon = SHIPPING_METHOD_ICONS[shippingPreset];
+  const totalCards = 1 + addedCards;
+  // A bundle past ENVELOPE_MAX_CARDS ships as a tracked package
+  // (apps/api/internal/shipping.UpgradeForItemCount) — previewed here before
+  // the intent's own shippingPreset confirms it.
+  const previewUpgradesToPackage =
+    totalCards > ENVELOPE_MAX_CARDS && SHIPPING_METHOD_ICONS[shippingPreset] === Mail;
 
   // One breakdown block, not two. Originally "Item price"/"Shipping" lived
   // here as a preview, and a second, separate Subtotal/Shipping/Tax/Order
@@ -81,21 +103,27 @@ export default function MockCheckout({
   // Rail switches transiently null the intent while StripeCheckout fetches
   // a fresh one (its own effect) — without this, toggling "Pay by bank
   // instead" would collapse the tax/total rows shut and reopen them a
-  // moment later, which reads as a glitch, not "fluid." lastIntentRef keeps
-  // the last real values on screen through that gap; hasLoadedOnce (a real
-  // state, unlike the ref, so it can drive the animation) latches true the
-  // first time an intent ever arrives and never resets, so the rows never
-  // collapse again once they've appeared.
-  const lastIntentRef = useRef<CheckoutIntent | null>(null);
-  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  // moment later, which reads as a glitch, not "fluid." lastIntent keeps
+  // the last real values on screen through that gap, and once it's set
+  // (hasLoadedOnce) it never goes back to null, so the rows never collapse
+  // again once they've appeared.
+  const [lastIntent, setLastIntent] = useState<CheckoutIntent | null>(null);
+  const hasLoadedOnce = lastIntent !== null;
   function handleIntentChange(next: CheckoutIntent | null) {
     setIntent(next);
-    if (next) {
-      lastIntentRef.current = next;
-      setHasLoadedOnce(true);
-    }
+    if (next) setLastIntent(next);
   }
-  const displayIntent = intent ?? lastIntentRef.current;
+  const displayIntent = intent ?? lastIntent;
+  // A previously-loaded intent is on screen but a fresh one (new add-ons,
+  // rail, or card) is being fetched — totals below are about to change.
+  const updating = !intent && hasLoadedOnce;
+  const effectivePreset: ShippingPreset = intent
+    ? intent.shippingPreset ?? shippingPreset
+    : previewUpgradesToPackage
+      ? "shippo_ground_advantage"
+      : shippingPreset;
+  const ShippingMethodIcon = SHIPPING_METHOD_ICONS[effectivePreset] ?? Package;
+  const shippingUpgraded = effectivePreset !== shippingPreset;
 
   // Matches the listing detail page's own price/buy box exactly
   // (app/listing/[id]/page.tsx's "Buy it now"/AuctionPriceBox container:
@@ -126,30 +154,59 @@ export default function MockCheckout({
           bottom with no visible reconciliation — the gap was real shipping
           cost, not a hidden fee, but nothing on the page said so. */}
       <div className="mt-3 flex items-center justify-between border-t border-brand-border pt-3 text-sm">
-        <span className="text-gray-500">{displayIntent ? "Subtotal" : "Item price"}</span>
+        <span className="text-gray-500">
+          {addons.length > 0 ? "Your card" : displayIntent ? "Subtotal" : "Item price"}
+        </span>
         <span className="text-lg font-bold text-gray-900">
-          {formatPrice(displayIntent ? displayIntent.subtotalCents : priceCents)}
+          {formatPrice(
+            addons.length > 0 ? priceCents : displayIntent ? displayIntent.subtotalCents : priceCents,
+          )}
         </span>
       </div>
+      {/* Add-ons from "Add Singles To Your Order" — the server's own
+          addonsCents once an up-to-date intent exists, the local preview
+          while one is being fetched. */}
+      {addons.length > 0 && (
+        <div className="mt-1.5 flex items-center justify-between text-sm">
+          <span className="text-gray-500">
+            Added singles ({addedCards} {addedCards === 1 ? "card" : "cards"})
+          </span>
+          <span className="font-semibold text-gray-900">
+            {formatPrice(intent ? intent.addonsCents : addonsPreviewCents)}
+          </span>
+        </div>
+      )}
       {/* shippingCostLabel (the pre-intent preview) already reads as a full
           phrase ("+$1.56 shipping", "Free Shipping") — pairing it with an
           explicit "Shipping:" prefix would say the word twice, so the
           method name is the only label. Once a real intent exists, the
           value switches to the authoritative intent.shippingCents (same
           bare-number style the tax/total rows below use), not the preview
-          string. */}
+          string. A bundle that outgrew an envelope says so instead. */}
       <div className="mt-1.5 flex items-center justify-between text-sm">
         <span className="flex items-center gap-1 text-gray-400">
-          <ShippingMethodIcon size={14} /> {shippingMethod}
+          <ShippingMethodIcon size={14} />{" "}
+          {shippingUpgraded ? `Tracked package (${totalCards} cards)` : shippingMethod}
         </span>
         <span className="text-gray-500">
-          {displayIntent
-            ? displayIntent.shippingCents > 0
-              ? formatPrice(displayIntent.shippingCents)
+          {intent
+            ? intent.shippingCents > 0
+              ? formatPrice(intent.shippingCents)
               : "Free"
-            : shippingCostLabel}
+            : shippingUpgraded
+              ? "Calculated at payment"
+              : displayIntent && !updating
+                ? displayIntent.shippingCents > 0
+                  ? formatPrice(displayIntent.shippingCents)
+                  : "Free"
+                : shippingCostLabel}
         </span>
       </div>
+      {shippingUpgraded && (
+        <p className="mt-1 text-xs text-gray-400">
+          Orders over {ENVELOPE_MAX_CARDS} cards ship as a tracked package instead of an envelope.
+        </p>
+      )}
 
       {/* The grid-rows 0fr->1fr trick animates height smoothly without
           knowing the content's height up front (a plain max-height
@@ -170,8 +227,8 @@ export default function MockCheckout({
           </div>
           <div className="mt-2 flex items-center justify-between border-t border-brand-border pt-2 text-sm">
             <span className="font-semibold text-gray-900">Order total</span>
-            <span className="text-lg font-bold text-gray-900">
-              {formatPrice(displayIntent?.amountCents ?? 0)}
+            <span className={`text-lg font-bold ${updating ? "text-gray-300" : "text-gray-900"}`}>
+              {updating ? "Updating..." : formatPrice(displayIntent?.amountCents ?? 0)}
             </span>
           </div>
         </div>
@@ -179,7 +236,12 @@ export default function MockCheckout({
 
       <ShippingAddressGate>
         {isStripeConfigured() ? (
-          <StripeCheckout listingId={listingId} onIntentChange={handleIntentChange} />
+          <StripeCheckout
+            listingId={listingId}
+            addons={addons}
+            addonsVersion={addonsVersion}
+            onIntentChange={handleIntentChange}
+          />
         ) : (
           <PlainMockCheckout listingId={listingId} />
         )}
@@ -274,6 +336,14 @@ async function finalizePurchase(listingId: string, paymentIntentId: string, cb: 
   } catch (err) {
     if (err instanceof ApiError && err.status === 409) {
       cb.onAlreadyPurchased();
+    } else if (err instanceof ApiError && err.status === 422) {
+      // Another buyer's order took some of the add-ons between this
+      // buyer authorizing and paying. The server already cancelled the
+      // payment (nothing charged); CheckoutBundle shows the server's
+      // "Sorry, someone bought these singles before you: ..." message,
+      // re-syncs the seller's stock, and trims the order to what's left.
+      emitAddonsUnavailable(err.message);
+      cb.onError("Your order changed — review it and pay again.");
     } else if (err instanceof ApiError && err.status === 403) {
       cb.onError("You can't buy your own listing.");
     } else {
@@ -341,9 +411,13 @@ async function confirmAndBuy(
 //      pattern the rail switch already used.
 function StripeCheckout({
   listingId,
+  addons,
+  addonsVersion,
   onIntentChange,
 }: {
   listingId: string;
+  addons: CheckoutAddonRequest[];
+  addonsVersion: number;
   // Mirrors this component's own intent state up to MockCheckout, which
   // merges it into the single Subtotal/Shipping/Tax/Order total block at
   // the top of the page instead of rendering a second copy of the same
@@ -364,6 +438,16 @@ function StripeCheckout({
   const [chargeError, setChargeError] = useState("");
   const [finishing, setFinishing] = useState(false);
   const [alreadyPurchased, setAlreadyPurchased] = useState(false);
+  // A stable dependency for the add-on list (a fresh array every render) —
+  // the intent effect below re-fetches only when the selection actually
+  // changes. addonsRef hands the current list to async callbacks.
+  const addonsKey = JSON.stringify(addons);
+  const addonsRef = useRef(addons);
+  // Declared before the intent effect below so the ref is current by the
+  // time that effect (and its debounced fetch) reads it.
+  useEffect(() => {
+    addonsRef.current = addons;
+  }, [addons]);
 
   // Load the saved-method list for whichever rail is active. A brand new
   // rail always starts from scratch — no selection, no stale intent, and
@@ -371,6 +455,7 @@ function StripeCheckout({
   // form, since there's nothing else to show.
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- resets the saved-method list before refetching it
     setMethods(null);
     setSelectedId(undefined);
     setIntent(null);
@@ -405,31 +490,44 @@ function StripeCheckout({
   useEffect(() => {
     if (methods === null) return;
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- clears the old intent before fetching a new one
     setIntent(null);
-    createCheckoutIntent(listingId, rail, adding ? undefined : selectedId)
-      .then((data) => {
-        if (!cancelled) setIntent(data);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        if (err instanceof ApiError && err.status === 409) {
-          setAlreadyPurchased(true);
-        } else if (err instanceof ApiError && err.status === 403) {
-          setLoadError("You can't buy your own listing.");
-        } else if (err instanceof ApiError && err.status === 412) {
-          // The seller hasn't finished Stripe Connect onboarding
-          // (design doc v2 §5.1) — a genuinely different condition from
-          // "already sold," which is why the backend uses a distinct
-          // status code (412, not 409) for it.
-          setLoadError("This seller hasn't finished setting up payouts yet. Check back soon.");
-        } else {
-          setLoadError(err instanceof Error ? err.message : "Couldn't start checkout.");
-        }
-      });
+    setLoadError("");
+    // Debounced so tapping "+" on a single several times in a row creates
+    // one PaymentIntent for the final selection, not one per tap.
+    const timer = setTimeout(() => {
+      createCheckoutIntent(listingId, rail, adding ? undefined : selectedId, addonsRef.current)
+        .then((data) => {
+          if (!cancelled) setIntent(data);
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          if (err instanceof ApiError && err.status === 422) {
+            // Add-ons went out of stock (or moved price) since the page
+            // loaded — CheckoutBundle shows the server's message, re-syncs
+            // stock, and bumps addonsVersion, which re-runs this effect
+            // with the trimmed order.
+            emitAddonsUnavailable(err.message);
+          } else if (err instanceof ApiError && err.status === 409) {
+            setAlreadyPurchased(true);
+          } else if (err instanceof ApiError && err.status === 403) {
+            setLoadError("You can't buy your own listing.");
+          } else if (err instanceof ApiError && err.status === 412) {
+            // The seller hasn't finished Stripe Connect onboarding
+            // (design doc v2 §5.1) — a genuinely different condition from
+            // "already sold," which is why the backend uses a distinct
+            // status code (412, not 409) for it.
+            setLoadError("This seller hasn't finished setting up payouts yet. Check back soon.");
+          } else {
+            setLoadError(err instanceof Error ? err.message : "Couldn't start checkout.");
+          }
+        });
+    }, 350);
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
-  }, [listingId, rail, selectedId, adding, methods]);
+  }, [listingId, rail, selectedId, adding, methods, addonsKey, addonsVersion]);
 
   // After the buyer saves a brand-new card/bank inline (AddCardForm/
   // AddBankForm's onDone, which hands back the id it just saved), finish
@@ -446,7 +544,7 @@ function StripeCheckout({
     setFinishing(true);
     setChargeError("");
     try {
-      const newIntent = await createCheckoutIntent(listingId, rail, paymentMethodId);
+      const newIntent = await createCheckoutIntent(listingId, rail, paymentMethodId, addonsRef.current);
       await confirmAndBuy(listingId, rail, newIntent.clientSecret, {
         onAlreadyPurchased: () => setAlreadyPurchased(true),
         onError: (m) => {
@@ -735,6 +833,7 @@ function NewCardForm({
   useEffect(() => {
     if (!saveForFuture) return;
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- clears the old setup secret before fetching a new one
     setSetupSecret(null);
     setSetupError("");
     createCardSetupIntent()

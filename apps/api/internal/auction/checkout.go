@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"auctionhous-tcg/api/internal/address"
+	"auctionhous-tcg/api/internal/kyc"
 	"auctionhous-tcg/api/internal/listing"
 	"auctionhous-tcg/api/internal/order"
 	"auctionhous-tcg/api/internal/payment"
@@ -25,6 +26,49 @@ import (
 // charges, never a bare stripe_account_id that exists but never finished
 // verification.
 var ErrSellerNotOnboarded = errors.New("this seller hasn't finished setting up payouts yet")
+
+// errBannedFingerprint blocks a checkout intent before any money moves —
+// the pre-charge half of the ban-evasion check, for a saved card/bank
+// whose fingerprint is already knowable (unlike a brand-new card, which
+// can only be checked post-capture — see buynow.go's
+// checkFraudAndStampOrder). A banned account's own saved methods are
+// already unusable (WithBanGuard 403s the whole request), so what this
+// actually catches is a *different, non-banned* account reusing the same
+// physical card/bank a banned account used before — the actual evasion
+// path this exists to close.
+var errBannedFingerprint = errors.New("this payment method is associated with a banned account")
+
+// blockedByBannedFingerprint reports whether paymentMethodID's underlying
+// card/bank-account fingerprint has ever been used on an order whose buyer
+// is currently banned for chargeback fraud. paymentMethodID empty (no
+// saved method resolved) is never blocked — CreateIntent/CreateAchIntent
+// fall through to a fresh, not-yet-known card entered directly in the
+// Payment Element in that case, which the post-capture check covers
+// instead.
+func blockedByBannedFingerprint(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, paymentMethodID string) (bool, error) {
+	if paymentMethodID == "" {
+		return false, nil
+	}
+	pm, err := paymentClient.RetrievePaymentMethod(ctx, paymentMethodID)
+	if err != nil {
+		return false, err
+	}
+	fingerprint := payment.FingerprintOfMethod(pm)
+	if fingerprint == "" {
+		return false, nil
+	}
+	var banned bool
+	if err := pool.QueryRow(ctx, `
+		select exists(
+			select 1 from orders o
+			join account_suspensions s on s.user_id = o.buyer_id
+			where o.buyer_payment_fingerprint = $1 and s.reason = 'chargeback_fraud' and now() < s.ends_at
+		)
+	`, fingerprint).Scan(&banned); err != nil {
+		return false, err
+	}
+	return banned, nil
+}
 
 type checkoutIntentResponse struct {
 	ClientSecret    string `json:"clientSecret"`
@@ -58,6 +102,17 @@ type checkoutIntentResponse struct {
 	// — only TaxCents/the final total actually vary between card and bank.
 	SubtotalCents int64 `json:"subtotalCents"`
 	ShippingCents int64 `json:"shippingCents"`
+	// ItemCents/AddonsCents split SubtotalCents into the primary listing's
+	// own price and the checkout add-ons on top of it ("Add Singles To Your
+	// Order") — AddonsCents is 0 for a plain single-card checkout.
+	// CardCount is every card in the shipment (primary + add-ons), and
+	// ShippingPreset is what it resolved to after the price and bundle-size
+	// upgrades (shipping.UpgradePreset/UpgradeForItemCount), so the
+	// checkout page can say "upgraded to a tracked package" when it is.
+	ItemCents      int64  `json:"itemCents"`
+	AddonsCents    int64  `json:"addonsCents"`
+	CardCount      int    `json:"cardCount"`
+	ShippingPreset string `json:"shippingPreset"`
 	// SavedCard/SavedBank reflect whichever saved payment method actually
 	// ended up attached to this intent — either paymentMethodId (below)
 	// if the buyer explicitly picked one in MockCheckout.tsx's picker, or
@@ -100,6 +155,19 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 		// card/bank in MockCheckout.tsx's picker (as opposed to just
 		// letting their default auto-attach, the fallback below).
 		chosenPaymentMethodID := r.URL.Query().Get("paymentMethodId")
+
+		// Optional JSON body: the add-ons the buyer picked on the checkout
+		// page. No body (or an empty list) is a plain single-card checkout,
+		// exactly as before add-ons existed.
+		var body struct {
+			Addons []AddonRequest `json:"addons"`
+		}
+		if r.Body != nil && r.ContentLength != 0 {
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid request body", http.StatusBadRequest)
+				return
+			}
+		}
 
 		listingID := r.PathValue("id")
 		lst, err := listing.Get(r.Context(), pool, listingID)
@@ -178,6 +246,39 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 			return
 		}
 
+		// Priced from the database, never from the request — the request
+		// only names ids and quantities.
+		addons, err := resolveAddons(r.Context(), pool, lst.SellerID, buyerID, listingID, body.Addons)
+		if err != nil {
+			var unavailable *AddonUnavailableError
+			switch {
+			case errors.As(err, &unavailable):
+				// 422, not 409: 409 means "the card you're checking out
+				// is already sold" to MockCheckout, a different message.
+				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			case errors.Is(err, errTooManyAddons):
+				http.Error(w, err.Error(), http.StatusBadRequest)
+			default:
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
+		itemCents := subtotalCents
+		subtotalCents += addonsSubtotal(addons)
+		cardCount := 1 + addonsCardCount(addons)
+
+		level, err := kyc.LevelForUser(r.Context(), pool, buyerID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := kyc.CheckPurchase(level, subtotalCents); err != nil {
+			// subtotalCents already includes add-ons here, so the KYC
+			// purchase cap applies to the whole bundle, not just the card.
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+
 		stripeAccountID, err := seller.RequirePayoutsEnabled(r.Context(), pool, lst.SellerID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -199,6 +300,9 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 		// so the authorized amount and the eventually-recorded order amount
 		// can never drift apart.
 		resolvedPreset, signatureRequired := shipping.UpgradePreset(shipping.Preset(lst.ShippingPreset), subtotalCents, lst.RequestSignature)
+		// A bundle too big for an envelope ships as a package — computed
+		// identically in createOrderRecord from the same add-on rows.
+		resolvedPreset = shipping.UpgradeForItemCount(resolvedPreset, cardCount)
 
 		// Real, live-quoted shipping cost — not the listing's frozen
 		// estimate — whenever a real quote is actually possible: this is
@@ -247,6 +351,10 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 			SellerNetCents:      int64(quote.SellerNet),
 			SubtotalCents:       subtotalCents,
 			ShippingCents:       shippingCents,
+			ItemCents:           itemCents,
+			AddonsCents:         subtotalCents - itemCents,
+			CardCount:           cardCount,
+			ShippingPreset:      string(resolvedPreset),
 		}
 
 		if rail == order.RailAch {
@@ -268,9 +376,20 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 				paymentMethodID = bank.ID
 				savedBank = bank
 			}
+			if blocked, err := blockedByBannedFingerprint(r.Context(), pool, paymentClient, paymentMethodID); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			} else if blocked {
+				http.Error(w, errBannedFingerprint.Error(), http.StatusForbidden)
+				return
+			}
 
 			pi, err := paymentClient.CreateAchIntent(r.Context(), listingID, buyerID, int64(quote.BankTotal), paymentMethodID, platformCustomerID, shippingCents, signatureRequired)
 			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := saveCheckoutAddons(r.Context(), pool, pi.ID, addons); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -301,9 +420,20 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 			paymentMethodID = card.ID
 			savedCard = card
 		}
+		if blocked, err := blockedByBannedFingerprint(r.Context(), pool, paymentClient, paymentMethodID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if blocked {
+			http.Error(w, errBannedFingerprint.Error(), http.StatusForbidden)
+			return
+		}
 
 		pi, err := paymentClient.CreateIntent(r.Context(), listingID, buyerID, int64(quote.CardTotal), paymentMethodID, platformCustomerID, shippingCents, signatureRequired)
 		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := saveCheckoutAddons(r.Context(), pool, pi.ID, addons); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

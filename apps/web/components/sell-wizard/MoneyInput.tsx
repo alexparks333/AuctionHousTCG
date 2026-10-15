@@ -1,6 +1,7 @@
 "use client";
 
 import type { ChangeEvent } from "react";
+import { shiftCentsInput } from "@/lib/format";
 
 export default function MoneyInput({
   label,
@@ -24,20 +25,7 @@ export default function MoneyInput({
   required?: boolean;
 }) {
   function handleChange(e: ChangeEvent<HTMLInputElement>) {
-    // Every keystroke — typed, pasted, autofilled, IME, anything — gets
-    // reduced to its raw digits and re-read as a whole number of cents,
-    // then reformatted to exactly 2 decimal places. That's what makes an
-    // amount like "54.7887" structurally impossible to end up with (there's
-    // no path that produces more than 2 decimals), and it's what gives the
-    // "50.90 -> type 0 -> 509.00" shift-left behavior real money inputs
-    // elsewhere use: the decimal point never moves, digits shift through it.
-    const digits = e.target.value.replace(/[^0-9]/g, "");
-    if (digits === "") {
-      onChange("");
-      return;
-    }
-    const cents = Math.min(Number.parseInt(digits, 10), 99_999_999); // $999,999.99 ceiling
-    onChange((cents / 100).toFixed(2));
+    onChange(shiftCentsInput(e.target.value));
   }
 
   return (

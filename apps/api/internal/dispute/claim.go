@@ -25,12 +25,16 @@ var (
 
 // OpenClaim starts a claim against orderID — only the buyer can (every
 // reason code in design doc v2 §9.3's matrix is framed from the buyer's
-// side), and only while the order is genuinely in its claim window
-// (matches internal/order's own transition table: claim_window ->
-// claim_open is the only edge the "claim_filed" trigger fires on).
-// Transitions the order itself alongside the new claim, and immediately
-// advances the claim from opened to negotiating — "opened" exists as a
-// state to land the first insert in, not a state anything sits in.
+// side). Almost every reason code requires the order to genuinely be in
+// its claim window (matches internal/order's own transition table:
+// claim_window -> claim_open is the "claim_filed" edge) — the one
+// exception is ReasonNotReceivedTrackingStalled, filable a step earlier,
+// while merely shipped ("tracking never updated" is knowable the moment
+// it's genuinely stalled, not only after a claim-window clock exists;
+// claim_filed_predelivery is that earlier edge). Transitions the order
+// itself alongside the new claim, and immediately advances the claim from
+// opened to negotiating — "opened" exists as a state to land the first
+// insert in, not a state anything sits in.
 func OpenClaim(ctx context.Context, pool *pgxpool.Pool, orderID, buyerID string, reasonCode ReasonCode, body string) (string, error) {
 	o, err := order.GetByID(ctx, pool, orderID)
 	if err != nil {
@@ -39,7 +43,8 @@ func OpenClaim(ctx context.Context, pool *pgxpool.Pool, orderID, buyerID string,
 	if buyerID != o.BuyerID {
 		return "", ErrNotBuyer
 	}
-	if o.State != order.StateClaimWindow {
+	preDeliveryEligible := o.State == order.StateShipped && reasonCode == ReasonNotReceivedTrackingStalled
+	if o.State != order.StateClaimWindow && !preDeliveryEligible {
 		return "", ErrOrderNotClaimable
 	}
 
@@ -57,7 +62,7 @@ func OpenClaim(ctx context.Context, pool *pgxpool.Pool, orderID, buyerID string,
 		}
 	}
 
-	if err := order.Transition(ctx, pool, orderID, order.StateClaimWindow, order.StateClaimOpen); err != nil {
+	if err := order.Transition(ctx, pool, orderID, o.State, order.StateClaimOpen); err != nil {
 		return "", fmt.Errorf("transition order to claim_open: %w", err)
 	}
 
@@ -292,6 +297,7 @@ var reasonLabels = map[ReasonCode]string{
 	ReasonPaymentFraud:                 "I didn't make this purchase",
 	ReasonBuyersRemorse:                "Changed my mind",
 	ReasonTransitDamage:                "Arrived damaged",
+	ReasonNotReceivedTrackingStalled:   "Never arrived — tracking never updated",
 }
 
 // autoAdjudicate is design doc v2 §9.1's auto-adjudication rules, pure and
