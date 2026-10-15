@@ -38,16 +38,43 @@ const (
 // these two terminal-ish states, with the partial amount recorded on the
 // claim itself (internal/dispute, not yet built).
 var transitions = map[State]map[State]string{
-	StateCreated:        {StatePaid: "payment_intent.succeeded", StatePaymentPending: "ach_submitted"},
+	// payment_window_expired: cmd/worker's cancelUnpaidOrders enforces the
+	// same 24h window the web app's own PAYMENT_WINDOW_MS displays — a
+	// won auction whose buyer never even started paying (never reached
+	// payment_pending or paid) gets cancelled rather than sitting in
+	// created forever. No refund path needed for this edge (see that
+	// function's own doc comment): nothing was ever charged.
+	StateCreated:        {StatePaid: "payment_intent.succeeded", StatePaymentPending: "ach_submitted", StateCancelled: "payment_window_expired"},
 	StatePaymentPending: {StatePaid: "charge.succeeded", StateCancelled: "charge.failed"},
-	StatePaid:           {StateAwaitingShip: "auto"},
-	StateAwaitingShip:   {StateShipped: "tracking_uploaded", StateCancelled: "ship_timeout_72h"},
-	StateShipped:        {StateDelivered: "carrier_delivered", StateRefunded: "no_delivery_scan_21d"},
+	// chargeback_lost (internal/chargeback.RecordStatusChange): a real bank
+	// dispute lost against the platform reflects into orders.state
+	// regardless of which state the order was actually in — this is why
+	// every row below except the two pre-charge ones (created/
+	// payment_pending, which can't have a real Stripe charge to dispute
+	// yet) gets a refunded edge, including released itself (the "seller
+	// already got paid, buyer also got their money back, platform eats the
+	// loss" case).
+	StatePaid: {StateAwaitingShip: "auto", StateRefunded: "chargeback_lost"},
+	// ship_timeout_96h: cmd/worker's cancelUnshippedOrders enforces the
+	// seller's 4-day ship-by window (design doc v2 §5.2, widened from the
+	// original 72h) — seller-fault, never the buyer's, so this refunds the
+	// buyer in full and never offers the listing to a second-chance
+	// bidder (internal/secondchance is buyer-fault-only; see its own doc
+	// comment). RequestShipExtension can push ship_deadline itself out
+	// once, but the edge here is unaffected either way.
+	StateAwaitingShip: {StateShipped: "tracking_uploaded", StateCancelled: "ship_timeout_96h", StateRefunded: "chargeback_lost"},
+	// claim_filed_predelivery: a buyer filing the new
+	// not_received_tracking_stalled reason (internal/dispute.OpenClaim) —
+	// the one claim reason code that's filable before delivered/
+	// claim_window, since "tracking never updated" is knowable the moment
+	// it's genuinely stalled, not only after a claim-window clock exists.
+	StateShipped: {StateDelivered: "carrier_delivered", StateClaimOpen: "claim_filed_predelivery", StateRefunded: "chargeback_lost"},
 	// trusted_release (design doc v2 §6.4): Gold/Hous Trust sellers skip
 	// the claim window entirely, releasing on the delivery scan itself —
 	// MarkDelivered (fulfillment.go) decides which edge applies per order.
-	StateDelivered:   {StateClaimWindow: "auto", StateReleased: "trusted_release"},
-	StateClaimWindow: {StateReleased: "claim_window_elapsed", StateClaimOpen: "claim_filed"},
+	StateDelivered:   {StateClaimWindow: "auto", StateReleased: "trusted_release", StateRefunded: "chargeback_lost"},
+	StateClaimWindow: {StateReleased: "claim_window_elapsed", StateClaimOpen: "claim_filed", StateRefunded: "chargeback_lost"},
+	StateReleased:    {StateRefunded: "chargeback_lost"},
 	StateClaimOpen:   {StateReleased: "claim_resolved_release", StateRefunded: "claim_resolved_refund"},
 }
 
@@ -61,13 +88,29 @@ var ErrInvalidTransition = errors.New("order: invalid state transition")
 // auctions.closed_at/paid_at (internal/auction), generalized from two
 // booleans to an eleven-state enum instead of inventing a new concurrency
 // approach.
+// ShipWindowHours is the seller's ship-by deadline (design doc v2 §5.2,
+// widened from the original 72h) — stamped onto ship_deadline the instant
+// an order lands in awaiting_ship, inside Transition itself rather than at
+// each of its three call sites (buynow.go's two, webhook.go's one), so no
+// current or future caller can forget it. RequestShipExtension is the only
+// other writer of this column, pushing it out once by this same duration.
+// A plain hours count times a literal interval, not a bound time.Duration —
+// same idiom cmd/worker's own timers already use (e.g.
+// unpaidOrderWindowHours) since pgx has no default encoding for a Go
+// Duration as a Postgres interval.
+const ShipWindowHours = 96
+
 func Transition(ctx context.Context, pool *pgxpool.Pool, orderID string, from, to State) error {
 	if _, ok := transitions[from][to]; !ok {
 		return fmt.Errorf("%w: %s -> %s is not a legal edge", ErrInvalidTransition, from, to)
 	}
 	tag, err := pool.Exec(ctx, `
-		update orders set state = $1, updated_at = now() where id = $2 and state = $3
-	`, string(to), orderID, string(from))
+		update orders set
+			state = $1,
+			updated_at = now(),
+			ship_deadline = case when $1 = 'awaiting_ship' then now() + interval '1 hour' * $4 else ship_deadline end
+		where id = $2 and state = $3
+	`, string(to), orderID, string(from), ShipWindowHours)
 	if err != nil {
 		return fmt.Errorf("transition order: %w", err)
 	}
@@ -118,6 +161,11 @@ type CreateInput struct {
 	// the preset arithmetic and hands over the already-decided result.
 	ShippingPreset    string
 	SignatureRequired bool
+	// PrimaryPriceCents is the primary listing's own price, recorded on its
+	// order_items row. Differs from Quote.Subtotal only when checkout
+	// add-ons (order_addons) were bundled onto the order; zero means "same
+	// as Quote.Subtotal" so callers without add-ons needn't set it.
+	PrimaryPriceCents int64
 }
 
 // CreateFromWin inserts one orders row (state=created) and its single
@@ -191,9 +239,13 @@ func CreateFromWin(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID, 
 		return "", fmt.Errorf("insert order: %w", err)
 	}
 
+	primaryPriceCents := in.PrimaryPriceCents
+	if primaryPriceCents == 0 {
+		primaryPriceCents = int64(q.Subtotal)
+	}
 	if _, err := pool.Exec(ctx, `
 		insert into order_items (order_id, listing_id, price_cents) values ($1, $2, $3)
-	`, orderID, listingID, int64(q.Subtotal)); err != nil {
+	`, orderID, listingID, primaryPriceCents); err != nil {
 		return "", fmt.Errorf("insert order item: %w", err)
 	}
 
@@ -260,4 +312,32 @@ func nullableString(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// ReleaseAddons puts an order's checkout add-ons (order_addons) back when
+// the order is cancelled or refunded: Singles Shop singles are restocked
+// and every add-on row is voided, in one transaction so a retry can never
+// restock twice (only not-yet-voided rows are touched). Add-on listings
+// are voided but left ended, the same as what happens to the order's
+// primary listing on cancellation. No-op for an order without add-ons.
+func ReleaseAddons(ctx context.Context, pool *pgxpool.Pool, orderID string) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		update shop_singles s set quantity = least(s.quantity + a.quantity, 9999), updated_at = now()
+		from order_addons a
+		where a.order_id = $1 and a.shop_single_id = s.id and a.voided_at is null
+	`, orderID); err != nil {
+		return fmt.Errorf("restock add-on singles: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		update order_addons set voided_at = now() where order_id = $1 and voided_at is null
+	`, orderID); err != nil {
+		return fmt.Errorf("void order add-ons: %w", err)
+	}
+	return tx.Commit(ctx)
 }

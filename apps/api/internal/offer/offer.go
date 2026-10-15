@@ -50,6 +50,10 @@ var (
 	ErrAlreadyPending     = errors.New("you already have a pending offer on this listing")
 	ErrNotPending         = errors.New("this offer has already been responded to")
 	ErrListingUnavailable = errors.New("this listing is no longer available to sell")
+	// ErrAccountSuspended/ErrListingSuspended mirror internal/auction's own
+	// pair — see that package's doc comment on the same names.
+	ErrAccountSuspended = errors.New("your account is temporarily suspended and can't make offers")
+	ErrListingSuspended = errors.New("this seller is temporarily suspended and their listings can't be offered on")
 )
 
 // Offer is denormalized with the listing's title/photo and both
@@ -164,6 +168,20 @@ func Submit(ctx context.Context, pool *pgxpool.Pool, buyerID, listingID string, 
 
 	if buyerID == sellerID {
 		return nil, ErrSelfOffer
+	}
+	var buyerSuspended, sellerSuspended bool
+	if err := pool.QueryRow(ctx, `
+		select
+			exists(select 1 from account_suspensions where user_id = $1 and now() < ends_at),
+			exists(select 1 from account_suspensions where user_id = $2 and now() < ends_at)
+	`, buyerID, sellerID).Scan(&buyerSuspended, &sellerSuspended); err != nil {
+		return nil, fmt.Errorf("check suspension status: %w", err)
+	}
+	if buyerSuspended {
+		return nil, ErrAccountSuspended
+	}
+	if sellerSuspended {
+		return nil, ErrListingSuspended
 	}
 	if !allowOffers {
 		return nil, ErrOffersNotAllowed

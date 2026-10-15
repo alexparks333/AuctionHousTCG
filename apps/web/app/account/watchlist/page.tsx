@@ -24,11 +24,11 @@ export default async function WatchlistPage() {
   return (
     <div className="px-10 py-8 sm:px-12 lg:px-14">
       <h1 className="text-xl font-bold text-gray-900">Watchlist</h1>
-      <p className="mt-1 text-sm text-gray-500">Listings you're keeping an eye on.</p>
+      <p className="mt-1 text-sm text-gray-500">Listings you&apos;re keeping an eye on.</p>
 
       {listings.length === 0 ? (
         <p className="mt-6 text-sm text-gray-500">
-          You're not watching anything yet. Tap the heart on a listing to save it here.
+          You&apos;re not watching anything yet. Tap the heart on a listing to save it here.
         </p>
       ) : (
         <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">

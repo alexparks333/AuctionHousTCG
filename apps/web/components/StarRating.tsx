@@ -11,8 +11,8 @@ export default function StarRating({
   rating: number;
   size?: number;
   // Callers on a background where the default gold-on-gold star loses
-  // contrast (e.g. ListingRow's gray seller pill) can override the fill
-  // and stroke — the star's outline is CSS `stroke`, driven by the text
+  // contrast can override the fill and stroke — the star's outline is
+  // CSS `stroke`, driven by the text
   // color class, not the fill class, so getting a colored fill with a
   // visible outline of a *different* color needs both set explicitly.
   filledClassName?: string;

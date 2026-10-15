@@ -20,8 +20,8 @@
 // inventory data — Firestore Security Rules (which do scope by collection)
 // only apply to client-SDK/end-user reads, not to a service account using
 // the Admin SDK. The actual boundary here is this package's own code: it
-// only ever queries the fixed collection names below, never a caller-
-// supplied path. Mirrors how apps/api's own Postgres connection uses the
+// only ever queries fixed collection/document names (catalog_snapshot,
+// and registry/main for the set list), never a caller-supplied path. Mirrors how apps/api's own Postgres connection uses the
 // `postgres` role and bypasses Supabase RLS by design (CLAUDE.md §6.12) —
 // the trust is pushed into this codebase, not enforced by the remote store.
 //

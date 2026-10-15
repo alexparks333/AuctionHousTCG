@@ -1,5 +1,6 @@
 import { getMyThreads, getMessageThread } from "@/lib/api";
 import { getLocalSession } from "@/lib/session";
+import { MessagesSquare } from "lucide-react";
 import MessagesApp from "@/components/messages/MessagesApp";
 
 export default async function MessagesPage({
@@ -39,10 +40,15 @@ export default async function MessagesPage({
     // internally instead, the way an actual mail client's two-pane layout
     // does.
     <div className="flex h-full flex-col px-10 py-8 sm:px-12 lg:px-14">
-      <h1 className="shrink-0 text-xl font-bold text-gray-900">Messages</h1>
-      <p className="mt-1 shrink-0 text-sm text-gray-500">
-        Conversations with buyers and sellers.
-      </p>
+      <div className="flex shrink-0 items-center gap-3">
+        <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-navy text-brand-gold-light">
+          <MessagesSquare size={19} />
+        </span>
+        <div>
+          <h1 className="text-xl font-bold tracking-tight text-gray-900">Messages</h1>
+          <p className="text-sm text-gray-500">Conversations with buyers and sellers.</p>
+        </div>
+      </div>
       <MessagesApp
         currentUserId={local?.userId ?? ""}
         initialThreads={initialThreads}

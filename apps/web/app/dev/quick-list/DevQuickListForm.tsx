@@ -53,7 +53,7 @@ export default function DevQuickListForm() {
         method: "POST",
         body: JSON.stringify({
           title,
-          game: "Pokémon",
+          game: "Riftbound",
           set: "Dev Test",
           condition: "Near Mint",
           isGraded: false,

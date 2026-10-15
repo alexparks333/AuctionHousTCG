@@ -45,6 +45,12 @@ func HandleGetForListing(pool *pgxpool.Pool) http.HandlerFunc {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
+		addons, err := ListAddons(r.Context(), pool, o.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		o.Addons = addons
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(o)
 	}
@@ -153,6 +159,79 @@ func HandleShip(pool *pgxpool.Pool) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(refreshed)
+	}
+}
+
+// HandleRequestShipExtension is the seller's one-time "I need more time to
+// ship" action on the Pending Shipment view — see RequestShipExtension's
+// own doc comment for the mechanics (partial refund to the buyer, deducted
+// from the seller's own eventual payout, ship_deadline pushed out once).
+func HandleRequestShipExtension(pool *pgxpool.Pool, paymentClient *payment.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		callerID, ok := platform.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		updated, err := RequestShipExtension(r.Context(), pool, paymentClient, r.PathValue("id"), callerID)
+		if err != nil {
+			status := http.StatusInternalServerError
+			switch {
+			case errors.Is(err, ErrNotFound):
+				status = http.StatusNotFound
+			case errors.Is(err, ErrNotSeller):
+				status = http.StatusForbidden
+			case errors.Is(err, ErrNotAwaitingShip), errors.Is(err, ErrExtensionAlreadyUsed):
+				status = http.StatusConflict
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(updated)
+	}
+}
+
+// HandleReleaseNow is the buyer's real "Release to Seller" action on the
+// Transactions list — a manual early exit from the claim_deadline countdown
+// (ReleaseNow's own doc comment has the full reasoning). Unlike
+// HandleDevAdvance this is a real, always-on action for any buyer, in any
+// environment — it isn't gated behind an AllowDev* flag.
+func HandleReleaseNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		callerID, ok := platform.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		o, err := GetForListing(r.Context(), pool, r.PathValue("id"))
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, ErrNotFound) {
+				status = http.StatusNotFound
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		if !requireParticipant(o, callerID) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+
+		updated, err := ReleaseNow(r.Context(), pool, paymentClient, o.ID, callerID)
+		if err != nil {
+			status := http.StatusInternalServerError
+			switch {
+			case errors.Is(err, ErrNotBuyer):
+				status = http.StatusForbidden
+			case errors.Is(err, ErrInvalidTransition):
+				status = http.StatusConflict
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(updated)
 	}
 }
 

@@ -39,22 +39,26 @@ export default async function AdminClaimsPage({
   const activeState = paramStr(params, "state") ?? "human_review";
   const stateFilter = activeState === "all" ? undefined : (activeState as ClaimState);
 
+  // try/catch rather than .catch(() => { error = ... }): reassigning
+  // `error` from inside a callback trips the React Compiler lint rule.
   let error = "";
-  const claims = await getAdminClaims(local.accessToken, stateFilter).catch((err) => {
+  let claims: Awaited<ReturnType<typeof getAdminClaims>> | null = null;
+  try {
+    claims = await getAdminClaims(local.accessToken, stateFilter);
+  } catch (err) {
     error =
       err instanceof ApiError && err.status === 403
         ? "You don't have access to this page."
         : err instanceof Error
           ? err.message
           : "Failed to load claims.";
-    return null;
-  });
+  }
 
   return (
     <div className="mx-auto w-full max-w-4xl">
       <h1 className="text-xl font-bold text-gray-900">Claims queue</h1>
       <p className="mt-1 text-sm text-gray-500">
-        Every claim gets a ticket number when it's filed — pick one up to review the thread and
+        Every claim gets a ticket number when it&apos;s filed — pick one up to review the thread and
         decide it.
       </p>
 

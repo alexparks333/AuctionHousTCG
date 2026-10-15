@@ -23,11 +23,11 @@ type Config struct {
 	// apps/web can call this API directly. Only one origin for now — revisit
 	// if a second frontend (e.g. the v2 mobile app, CLAUDE.md §2) ever needs one.
 	WebOrigin string
-	// Environment gates dev-only affordances (currently: short auction
-	// durations for testing the bidding engine, CLAUDE.md §6.1). Defaults to
-	// "development" — there's no deployed production environment yet, so an
-	// explicit APP_ENV=production is what turns these off, mirroring how
-	// apps/web's NODE_ENV defaults to "development" under `next dev`.
+	// Environment gates dev-only affordances (short auction durations,
+	// listing without photos, the dev tier/order/message tools — see
+	// cmd/api/main.go). Defaults to "production" so a deploy that forgets
+	// APP_ENV can never expose them; only an explicit APP_ENV=development
+	// (set in your local apps/api/.env) turns them on.
 	Environment string
 	// StripeSecretKey is a TEST-mode secret key (sk_test_...) for the Buy
 	// It Now checkout flow (internal/payment). Empty until a Stripe
@@ -114,6 +114,23 @@ type Config struct {
 	// local dev so testing this doesn't actually page support@.
 	ClaimsNotifyFrom string
 	ClaimsNotifyTo   string
+	// AccountEmailFrom is the sender for account-facing transactional email
+	// (internal/emailverify's one-time codes) — same Resend API key/
+	// verified domain as ClaimsNotifyFrom, just a different display name
+	// suited for an email a real user reads rather than an internal ops
+	// alert. Defaults to a plain noreply address on the same domain.
+	AccountEmailFrom string
+	// IdentityFingerprintHMACKey is a server-side-only secret used to HMAC
+	// (never plain-hash — see internal/webhook.identityFingerprint's own
+	// doc comment on why) the verified ID number + DOB Stripe Identity
+	// returns, so a banned account's real identity can be recognized if it
+	// re-verifies under a brand-new account (Plan B / CLAUDE.md §7's
+	// ban-evasion detection). Never rotate this casually — rotating it
+	// silently stops matching any previously-stored fingerprint. Empty
+	// skips fingerprinting entirely (identity verification itself still
+	// works, just without this extra cross-check) — same
+	// graceful-degradation pattern as every other optional layer here.
+	IdentityFingerprintHMACKey string
 	// GooglePlacesAPIKey powers internal/address.AutocompleteClient — real
 	// address suggestions as a seller/buyer types (Google Cloud Console:
 	// enable "Places API (New)", create a restricted API key, see
@@ -124,6 +141,16 @@ type Config struct {
 	// same graceful-degradation pattern as every other optional integration
 	// here — the frontend just falls back to a plain text field.
 	GooglePlacesAPIKey string
+	// TwilioAccountSID/TwilioAuthToken/TwilioVerifyServiceSID power
+	// internal/phoneverify — KYC L1 (Plan B, CLAUDE.md §7's chargeback-fraud
+	// ban system). A Verify Service is created once in the Twilio Console
+	// (Verify > Services), separate from the account credentials
+	// themselves. Empty skips registering POST /me/phone/{start,check}-verify,
+	// same graceful-degradation pattern as every other optional integration
+	// here — a user just can't advance past KYC level 0 until this is set.
+	TwilioAccountSID       string
+	TwilioAuthToken        string
+	TwilioVerifyServiceSID string
 }
 
 // LoadConfig reads configuration from the environment, applying sane local
@@ -136,7 +163,7 @@ func LoadConfig() (Config, error) {
 		RedisURL:                   getEnv("REDIS_URL", "redis://localhost:6379/0"),
 		SupabaseURL:                getEnv("SUPABASE_URL", ""),
 		WebOrigin:                  getEnv("WEB_ORIGIN", "http://localhost:4000"),
-		Environment:                getEnv("APP_ENV", "development"),
+		Environment:                getEnv("APP_ENV", "production"),
 		StripeSecretKey:            getEnv("STRIPE_SECRET_KEY", ""),
 		StripeWebhookSecret:        getEnv("STRIPE_WEBHOOK_SECRET", ""),
 		CarrierWebhookSecret:       getEnv("CARRIER_WEBHOOK_SECRET", ""),
@@ -150,7 +177,12 @@ func LoadConfig() (Config, error) {
 		ResendAPIKey:               getEnv("RESEND_API_KEY", ""),
 		ClaimsNotifyFrom:           getEnv("CLAIMS_NOTIFY_FROM_EMAIL", "AuctionHous Claims <claims@auctionhous.net>"),
 		ClaimsNotifyTo:             getEnv("CLAIMS_NOTIFY_TO_EMAIL", "support@auctionhous.net"),
+		AccountEmailFrom:           getEnv("ACCOUNT_EMAIL_FROM", "AuctionHous <noreply@auctionhous.net>"),
+		IdentityFingerprintHMACKey: getEnv("IDENTITY_FINGERPRINT_HMAC_KEY", ""),
 		GooglePlacesAPIKey:         getEnv("GOOGLE_PLACES_API_KEY", ""),
+		TwilioAccountSID:           getEnv("TWILIO_ACCOUNT_SID", ""),
+		TwilioAuthToken:            getEnv("TWILIO_AUTH_TOKEN", ""),
+		TwilioVerifyServiceSID:     getEnv("TWILIO_VERIFY_SERVICE_SID", ""),
 	}
 	if cfg.Port == "" {
 		return Config{}, fmt.Errorf("PORT must not be empty")

@@ -2,6 +2,7 @@ import { cache } from "react";
 import { createClient } from "./supabase/client";
 import type {
   CatalogCard,
+  CatalogSetGroup,
   EndListingAction,
   EndListingReason,
   Game,
@@ -9,6 +10,7 @@ import type {
   MyBid,
   OfferStatus,
   ShippingPreset,
+  ShopSingle,
 } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
@@ -145,6 +147,27 @@ export async function searchCatalogCards(game: string, query: string): Promise<C
   return res.json();
 }
 
+// Public — an enabled game's sets, grouped like TCG Haven's Cardex
+// (apps/api/internal/cardcatalog.Sets). [] when the catalog isn't set up.
+export async function getCatalogSets(game: string): Promise<CatalogSetGroup[]> {
+  try {
+    const res = await fetch(`${API_URL}/catalog/sets?game=${encodeURIComponent(game)}`, { cache: "no-store" });
+    if (!res.ok) return [];
+    return res.json();
+  } catch {
+    return [];
+  }
+}
+
+// Public — every card in one set, in Cardex order.
+export async function getCatalogSetCards(game: string, set: string): Promise<CatalogCard[]> {
+  const res = await fetch(
+    `${API_URL}/catalog/cards?game=${encodeURIComponent(game)}&set=${encodeURIComponent(set)}`,
+  );
+  if (!res.ok) throw new Error(`Couldn't load ${set}: ${res.status}`);
+  return res.json();
+}
+
 // Requires auth — Server Components pass the session's access token
 // explicitly since there's no browser Supabase client available there.
 export async function getMyBids(accessToken: string): Promise<MyBid[]> {
@@ -161,7 +184,12 @@ export async function getMyBids(accessToken: string): Promise<MyBid[]> {
 // the real data behind the Buy History page. Each result's paidAt
 // reflects whether a real Stripe charge actually captured for it — never
 // guessed, see internal/auction.MyPurchases.
-export async function getMyPurchases(accessToken: string): Promise<Listing[]> {
+// One Buy/Sold History row — mirrors apps/api/internal/auction.HistoryRow:
+// the listing bought, plus what was bundled onto its order at checkout.
+// Add-on listings never get a row of their own; they're counted here.
+export type HistoryRow = Listing & { bundleCardCount: number; bundleCents: number };
+
+export async function getMyPurchases(accessToken: string): Promise<HistoryRow[]> {
   const res = await fetch(`${API_URL}/me/purchases`, {
     cache: "no-store",
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -172,7 +200,7 @@ export async function getMyPurchases(accessToken: string): Promise<Listing[]> {
 
 // MyPurchases' mirror image — every listing the caller has actually sold,
 // newest first — the real data behind the Sold History page.
-export async function getMySales(accessToken: string): Promise<Listing[]> {
+export async function getMySales(accessToken: string): Promise<HistoryRow[]> {
   const res = await fetch(`${API_URL}/me/sales`, {
     cache: "no-store",
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -184,62 +212,6 @@ export async function getMySales(accessToken: string): Promise<Listing[]> {
 // Mirrors apps/api/internal/seller.Tier exactly.
 export type SellerTier = "new" | "bronze" | "silver" | "gold" | "platinum" | "hous_trust";
 
-// Mirrors apps/api/internal/user.ProfileSticker exactly. xPct is a
-// percentage (0-100) of the canvas's width. yPx is pixels down from the
-// canvas's top edge, deliberately NOT a percentage — see
-// ProfileSticker's doc comment in user.go for why (the canvas's height
-// grows/shrinks with the widget stack; a percentage-of-height Y would
-// recompute to a different pixel position every time that happened).
-// rotationDeg/scale aren't editable yet (no rotate/resize handles in the
-// UI) but are shipped now so a future editor upgrade is additive, not
-// another API-shape change.
-export interface ProfileSticker {
-  id: string;
-  kind: string;
-  xPct: number;
-  yPx: number;
-  rotationDeg: number;
-  scale: number;
-}
-
-// Mirrors apps/api/internal/user.FavoriteCardRef exactly — a denormalized
-// snapshot of one CatalogCard result, not a foreign key (internal/
-// cardcatalog has no "get by id" lookup to re-fetch one from).
-export interface FavoriteCardRef {
-  id: string;
-  game: string;
-  name: string;
-  setName: string;
-  number: string;
-  rarity: string;
-  imageUrl: string;
-}
-
-// Mirrors apps/api/internal/user.ProfileWidget exactly. The canvas is a
-// 3-column grid — col (0-2) is which column a widget starts at; order in
-// the array decides which row (a full-width type like "listings" always
-// starts a fresh row; col is meaningless for it, the frontend never reads
-// it there). favoriteCard is only meaningful for the "favorite_card"
-// type — null means "added but not configured yet".
-export interface ProfileWidget {
-  id: string;
-  type: string;
-  col: number;
-  favoriteCard: FavoriteCardRef | null;
-}
-
-// Mirrors apps/api/internal/user.ProfileCanvas exactly. The painted
-// profile background: url points at a lossless PNG in the profile-canvas
-// Storage bucket (the pixels never touch the Go API), width/height are the
-// bitmap's intrinsic size — width is the fixed PAINT_DESIGN_WIDTH the
-// owner painted at, height grows as widgets extend the page (new pixel
-// rows added at the bottom, never a rescale).
-export interface ProfileCanvas {
-  url: string;
-  width: number;
-  height: number;
-}
-
 export interface Me {
   id: string;
   email: string;
@@ -247,9 +219,23 @@ export interface Me {
   bio: string | null;
   createdAt: string;
   tier: SellerTier;
-  stickers: ProfileSticker[];
-  widgets: ProfileWidget[];
-  profileCanvas: ProfileCanvas | null;
+  // isBanned/bannedAt are derived, never a stored flag (internal/user.Get's
+  // live account_suspensions subquery) — Plan B / CLAUDE.md §7's
+  // chargeback-fraud ban system. A banned account can still load /me (it's
+  // a GET — internal/platform.WithBanGuard only blocks writes), which is
+  // exactly what lets AccountBannedBanner render at all.
+  isBanned: boolean;
+  bannedAt: string | null;
+  // phoneVerifiedAt/emailVerifiedAt/identityVerifiedAt/bankVerifiedAt back
+  // internal/kyc.Level client-side (the /verify pages' own progress
+  // display) — never sent anywhere but here, unlike isBanned which is
+  // also on PublicUser. emailVerifiedAt is internal/emailverify's own
+  // one-time-code flow, not Supabase's/Google's signup email confirmation
+  // — KYC level 1 requires both phone AND email verification.
+  phoneVerifiedAt: string | null;
+  emailVerifiedAt: string | null;
+  identityVerifiedAt: string | null;
+  bankVerifiedAt: string | null;
 }
 
 // Requires auth — same explicit-accessToken shape as getMyBids, since
@@ -328,9 +314,12 @@ export interface PublicUser {
   bio: string | null;
   createdAt: string;
   tier: SellerTier;
-  stickers: ProfileSticker[];
-  widgets: ProfileWidget[];
-  profileCanvas: ProfileCanvas | null;
+  // isBanned/bannedAt are shown on OTHER users' view of this profile too —
+  // explicit product decision (Plan B / CLAUDE.md §7): a chargeback-fraud
+  // ban reads as a dead account to anyone visiting it, not just to the
+  // banned user's own account view.
+  isBanned: boolean;
+  bannedAt: string | null;
 }
 
 // Public — no auth needed. Backs the seller profile page
@@ -342,35 +331,6 @@ export async function getUserByUsername(username: string): Promise<PublicUser | 
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Failed to load user: ${res.status}`);
   return res.json();
-}
-
-// Client-only (apiFetch) — always sends the caller's whole background
-// arrangement, mirroring internal/user.SetStickers' replace-not-patch
-// semantics.
-export async function setMyStickers(stickers: ProfileSticker[]): Promise<Me> {
-  return apiFetch("/me/stickers", {
-    method: "POST",
-    body: JSON.stringify({ stickers }),
-  });
-}
-
-// Client-only (apiFetch) — always sends the caller's whole widget layout,
-// mirroring internal/user.SetWidgets' replace-not-patch semantics.
-export async function setMyWidgets(widgets: ProfileWidget[]): Promise<Me> {
-  return apiFetch("/me/widgets", {
-    method: "POST",
-    body: JSON.stringify({ widgets }),
-  });
-}
-
-// Client-only (apiFetch) — records the painted canvas descriptor after the
-// PNG itself has been uploaded to Storage (lib/storage.ts's
-// uploadProfileCanvas). null clears the painting entirely.
-export async function setMyCanvas(canvas: ProfileCanvas | null): Promise<Me> {
-  return apiFetch("/me/canvas", {
-    method: "POST",
-    body: JSON.stringify({ canvas }),
-  });
 }
 
 export interface Review {
@@ -461,6 +421,19 @@ export interface BuyerStats {
   tag: BuyerReviewTag | null;
   reviewCount: number;
   averageRating: number;
+  // Every seller review of this buyer, newest first (the profile's Buyer
+  // Reviews tab).
+  reviews: PublicBuyerReview[];
+}
+
+export interface PublicBuyerReview {
+  id: string;
+  reviewerUsername: string | null;
+  listingTitle: string;
+  rating: number;
+  tag: BuyerReviewTag;
+  comment: string | null;
+  createdAt: string;
 }
 
 // Requires auth (the caller must be this order's seller) — same
@@ -574,6 +547,7 @@ export async function updateListing(
     minOfferCents: number;
     startingBidCents?: number;
     shippingPreset?: ShippingPreset | "";
+    requestSignature?: boolean;
     imageUrls: string[];
   },
 ): Promise<Listing> {
@@ -655,6 +629,9 @@ export async function ackCelebration(
 // stay in the list until read.
 export interface AppNotification {
   id: string;
+  // The listing's order includes checkout add-ons (singles bundled on) —
+  // shown as an extra "Bundle" tag (apps/api/internal/notification).
+  isBundle?: boolean;
   kind:
     | "won"
     | "sold"
@@ -664,7 +641,14 @@ export interface AppNotification {
     | "buyer_review"
     | "offer_received"
     | "offer_accepted"
-    | "offer_declined";
+    | "offer_declined"
+    | "second_chance_offer"
+    | "listing_needs_relist"
+    | "chargeback_lost"
+    | "ship_deadline_warning"
+    | "account_suspended"
+    | "ship_extension_granted"
+    | "account_banned";
   listingId: string;
   listingTitle: string;
   listingGame: Game;
@@ -674,6 +658,10 @@ export interface AppNotification {
   // with their own pending offer at once, so the listing alone doesn't
   // disambiguate which one this notification is about.
   offerId?: string;
+  // Set on second_chance_offer only — same disambiguation reasoning as
+  // offerId, routing the bell straight to the specific second-chance
+  // offer page rather than just the listing.
+  secondChanceOfferId?: string;
   readAt: string | null;
   createdAt: string;
 }
@@ -791,6 +779,64 @@ export async function acceptOffer(offerId: string): Promise<Offer> {
 
 export async function declineOffer(offerId: string): Promise<Offer> {
   return apiFetch(`/offers/${offerId}/decline`, { method: "POST" });
+}
+
+// Mirrors apps/api/internal/secondchance.Offer exactly — eBay's "Second
+// Chance Offer," eBay's answer to a won auction's sale falling through for
+// a buyer-fault reason (never paid, or a chargeback lost before the item
+// shipped): the runner-up bidder gets offered the item at their own real
+// last max bid, with a time-limited window to accept. Never offered for a
+// seller-fault failure (missed the ship deadline) — see the backend
+// package's own doc comment.
+export type SecondChanceOfferStatus = "pending" | "accepted" | "declined" | "expired";
+
+export interface SecondChanceOffer {
+  id: string;
+  listingId: string;
+  listingTitle: string;
+  listingImageUrl?: string;
+  sellerId: string;
+  sellerUsername: string | null;
+  bidderId: string;
+  amountCents: number;
+  status: SecondChanceOfferStatus;
+  expiresAt: string;
+  createdAt: string;
+  respondedAt?: string;
+}
+
+export async function getSecondChanceOffer(offerId: string): Promise<SecondChanceOffer> {
+  return apiFetch(`/second-chance-offers/${offerId}`);
+}
+
+// Server-side variant (explicit accessToken, no-store) — same shape as
+// getOrderForListing — for app/second-chance/[id]/page.tsx's initial
+// server-rendered fetch.
+export async function getSecondChanceOfferServer(
+  offerId: string,
+  accessToken: string,
+): Promise<SecondChanceOffer> {
+  const res = await fetch(`${API_URL}/second-chance-offers/${offerId}`, {
+    cache: "no-store",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiError(text || `Failed to load offer: ${res.status}`, res.status);
+  }
+  return res.json();
+}
+
+// Creates the same real, unpaid order a regular auction win does
+// (auction.CreatePendingOrderForWin) — the caller still has to actually
+// pay for it through the normal checkout flow from there, same 24h payment
+// window as any other won auction.
+export async function acceptSecondChanceOffer(offerId: string): Promise<SecondChanceOffer> {
+  return apiFetch(`/second-chance-offers/${offerId}/accept`, { method: "POST" });
+}
+
+export async function declineSecondChanceOffer(offerId: string): Promise<SecondChanceOffer> {
+  return apiFetch(`/second-chance-offers/${offerId}/decline`, { method: "POST" });
 }
 
 // Mirrors apps/api/internal/message exactly — real buyer/seller direct
@@ -954,10 +1000,22 @@ export async function devSimulateIncomingMessage(): Promise<void> {
 // when Stripe isn't configured (apps/api falls back to its original
 // no-payment path); the backend itself enforces which is required, not
 // this function.
-export async function buyNow(listingId: string, paymentIntentId?: string): Promise<Listing> {
+// fraudPolicyAcknowledged mirrors ShippingAddressGate.tsx's second required
+// checkbox (Plan B / CLAUDE.md §7's chargeback-fraud ban system) — the
+// backend rejects with 400 if this isn't true, so every call site is only
+// ever reached after that gate's `confirmed` branch has already rendered,
+// meaning both checkboxes are already checked.
+export async function buyNow(
+  listingId: string,
+  paymentIntentId?: string,
+  fraudPolicyAcknowledged = true,
+): Promise<Listing> {
   return apiFetch(`/listings/${listingId}/buy-now`, {
     method: "POST",
-    body: JSON.stringify(paymentIntentId ? { paymentIntentId } : {}),
+    body: JSON.stringify({
+      ...(paymentIntentId ? { paymentIntentId } : {}),
+      fraudPolicyAcknowledged,
+    }),
   });
 }
 
@@ -1012,12 +1070,74 @@ export interface CheckoutIntent {
   // shape as OrderReceipt.tsx's post-purchase receipt.
   subtotalCents: number;
   shippingCents: number;
+  // subtotalCents split into the primary listing's own price and the
+  // checkout add-ons on top ("Add Singles To Your Order"). cardCount is
+  // every card in the shipment; shippingPreset is what shipping resolved to
+  // after the price and bundle-size upgrades (apps/api/internal/shipping.
+  // UpgradeForItemCount) — e.g. a big bundle that switched to a package.
+  itemCents: number;
+  addonsCents: number;
+  cardCount: number;
+  shippingPreset: ShippingPreset;
   // Whichever saved card/bank actually ended up attached to this intent —
   // whatever MockCheckout.tsx's picker passed as paymentMethodId (below),
   // or the buyer's default if they haven't picked one yet. Never both set
   // (rail decides which is even possible).
   savedCard?: SavedCard;
   savedBank?: SavedBank;
+}
+
+// --- Singles Shop (apps/api/internal/singles) ---
+
+// Requires auth — the caller's own Singles Shop, sold-out rows included
+// (they stay visible so they can be restocked). Explicit accessToken, same
+// server-render shape as getMyOrders.
+export async function getMySingles(accessToken: string): Promise<ShopSingle[]> {
+  const res = await fetch(`${API_URL}/me/singles`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Failed to load singles: ${res.status}`);
+  return res.json();
+}
+
+// Public — a seller's in-stock singles, for their profile page and the
+// checkout add-on picker. [] on any failure: the shop is an extra, never
+// worth breaking the page that shows it.
+export async function getUserSingles(username: string): Promise<ShopSingle[]> {
+  try {
+    const res = await fetch(`${API_URL}/users/${encodeURIComponent(username)}/singles`, { cache: "no-store" });
+    if (!res.ok) return [];
+    return res.json();
+  } catch {
+    return [];
+  }
+}
+
+export interface AddSingleInput {
+  game: string;
+  catalogCardId: string;
+  condition: string;
+  isFoil: boolean;
+  quantity: number;
+}
+
+// The price is never sent — the server derives it from the market price
+// (singlesPriceCents). Adding a variant (card + condition + foil) the
+// seller already stocks merges into it server-side: quantity adds on.
+export async function addSingle(input: AddSingleInput): Promise<ShopSingle> {
+  return apiFetch("/me/singles", { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function updateSingle(
+  id: string,
+  patch: { quantity: number },
+): Promise<ShopSingle> {
+  return apiFetch(`/me/singles/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+}
+
+export async function removeSingle(id: string): Promise<void> {
+  await apiFetch(`/me/singles/${id}`, { method: "DELETE" });
 }
 
 // Authorizes a payment for listingId's Buy It Now price on the given rail
@@ -1030,14 +1150,26 @@ export interface CheckoutIntent {
 // paymentMethodId is a platform-level SavedCard/SavedBank id (never a raw
 // Stripe payment method the buyer hasn't saved) — omit it to fall back to
 // their default.
+// One line of "Add Singles To Your Order" — just an id and a quantity; the
+// server prices everything itself (apps/api/internal/auction.AddonRequest).
+export interface CheckoutAddonRequest {
+  kind: "single" | "listing";
+  id: string;
+  quantity: number;
+}
+
 export async function createCheckoutIntent(
   listingId: string,
   rail: "card" | "ach" = "card",
   paymentMethodId?: string,
+  addons: CheckoutAddonRequest[] = [],
 ): Promise<CheckoutIntent> {
   const params = new URLSearchParams({ rail });
   if (paymentMethodId) params.set("paymentMethodId", paymentMethodId);
-  return apiFetch(`/listings/${listingId}/checkout-intent?${params}`, { method: "POST" });
+  return apiFetch(`/listings/${listingId}/checkout-intent?${params}`, {
+    method: "POST",
+    body: addons.length > 0 ? JSON.stringify({ addons }) : undefined,
+  });
 }
 
 // Requires auth — same explicit-accessToken shape as getMyBids. Every
@@ -1107,6 +1239,45 @@ export async function setDefaultBank(paymentMethodId: string): Promise<void> {
 
 export async function deleteSavedBank(paymentMethodId: string): Promise<void> {
   await apiFetch(`/me/payment-methods/banks/${paymentMethodId}`, { method: "DELETE" });
+}
+
+// --- KYC verification (internal/kyc, Plan B / CLAUDE.md §7's
+// chargeback-fraud ban system) — a 3-level ladder gating purchase size:
+// L1 (phone AND email, both required) caps a buyer at $25/item; L2
+// (identity, below) removes the cap; L3 (a verified bank account, already
+// handled by createBankSetupIntent above) unlocks the ACH rail. All throw
+// ApiError on a wrong/expired code or an unconfigured backend
+// (PhoneVerifyForm.tsx/EmailVerifyForm.tsx/IdentityVerifyButton.tsx
+// surface err.message directly) rather than returning a boolean, since
+// there's nothing meaningful to do with a false besides show the same
+// message anyway.
+export async function startPhoneVerify(phone: string): Promise<void> {
+  await apiFetch("/me/phone/start-verify", { method: "POST", body: JSON.stringify({ phone }) });
+}
+
+export async function checkPhoneVerify(phone: string, code: string): Promise<void> {
+  await apiFetch("/me/phone/check-verify", { method: "POST", body: JSON.stringify({ phone, code }) });
+}
+
+// Email verification's account is always the caller's own — internal/
+// emailverify.HandleStartVerify reads it server-side off the users row,
+// never a client-supplied address, so there's no email param here.
+export async function startEmailVerify(): Promise<void> {
+  await apiFetch("/me/email/start-verify", { method: "POST" });
+}
+
+export async function checkEmailVerify(code: string): Promise<void> {
+  await apiFetch("/me/email/check-verify", { method: "POST", body: JSON.stringify({ code }) });
+}
+
+// Starts a Stripe Identity hosted-flow session (KYC level 2 — government
+// ID + SSN, verified by Stripe, never stored by this app) and returns the
+// URL to redirect the buyer to. The actual verified_at timestamp is only
+// ever set later, asynchronously, by internal/webhook's
+// identity.verification_session.verified case — this call just starts the
+// session.
+export async function startIdentityVerify(): Promise<{ url: string }> {
+  return apiFetch("/me/identity/start-verify", { method: "POST" });
 }
 
 // Mirrors apps/api/internal/seller.ConnectAccountStatus exactly. This is a
@@ -1227,6 +1398,13 @@ export interface Order {
   deliveredAt?: string;
   claimDeadline?: string;
   releasedAt?: string;
+  // ShipDeadline is the seller's ship-by deadline, set the instant the
+  // order enters awaiting_ship — undefined outside that state (and for
+  // orders created before this feature existed). ShipExtensionUsedAt is
+  // set once the seller has used their one-time "request more time"
+  // action (see requestShipExtension).
+  shipDeadline?: string;
+  shipExtensionUsedAt?: string;
   createdAt: string;
   // Snapshotted at sale time (apps/api/internal/order.CreateFromWin) —
   // whichever of the listing's chosen preset and the price-driven floor
@@ -1236,6 +1414,26 @@ export interface Order {
   signatureRequired: boolean;
   labelCostCents?: number;
   labelUrl?: string;
+  // Items bundled onto this order at checkout (apps/api/internal/order.
+  // Addon) — what the seller packs alongside the primary listing. Only
+  // present on the single-order endpoint (getOrderForListing), not lists.
+  addons?: OrderAddon[];
+}
+
+// Mirrors apps/api/internal/order.Addon exactly.
+export interface OrderAddon {
+  kind: "single" | "listing";
+  shopSingleId?: string;
+  listingId?: string;
+  title: string;
+  setName: string;
+  cardNumber: string;
+  condition: string;
+  isFoil: boolean;
+  imageUrl?: string;
+  quantity: number;
+  unitPriceCents: number;
+  voided: boolean;
 }
 
 // Mirrors apps/api/internal/order.Summary exactly — the Transactions tab's
@@ -1253,6 +1451,11 @@ export interface OrderSummary extends Order {
   sellerUsername?: string;
   buyerUsername?: string;
   viewerIsSeller: boolean;
+  // Extra cards added at checkout ("Add Singles To Your Order") — 0 for a
+  // plain one-card order. bundleListingIds are add-on lines that were
+  // whole listings, so the Selling page can tag those as bundled too.
+  bundleCardCount: number;
+  bundleListingIds: string[];
 }
 
 // Every order the caller is a participant in, buyer or seller side,
@@ -1290,6 +1493,14 @@ export type EvidenceType =
 // accessToken shape as getMyAddress/getSavedCards, since the order page
 // fetches this server-side. Throws (via ApiError, status 404) if this
 // listing was never paid for through the real Connect checkout path.
+// Client-side: the add-ons bundled onto the order a listing belongs to —
+// fetched lazily by BundleTagPreview on first hover, rather than shipping
+// every order's add-on list inside the Transactions list payload.
+export async function getOrderAddonsClient(listingId: string): Promise<OrderAddon[]> {
+  const order: Order = await apiFetch(`/listings/${listingId}/order`);
+  return (order.addons ?? []).filter((a) => !a.voided);
+}
+
 export async function getOrderForListing(listingId: string, accessToken: string): Promise<Order> {
   const res = await fetch(`${API_URL}/listings/${listingId}/order`, {
     cache: "no-store",
@@ -1537,6 +1748,26 @@ export async function devAdvanceOrder(listingId: string): Promise<Order> {
   return apiFetch(`/listings/${listingId}/order/dev-advance`, { method: "POST" });
 }
 
+// The buyer's real "Release to Seller" action (Transactions list,
+// TransactionStepper's Play-button bubble) — releases funds immediately
+// instead of waiting out the rest of the claim_deadline countdown. Only
+// legal while the order is in claim_window and only the buyer may call it
+// (apps/api/internal/order.ReleaseNow) — irreversible, so the caller is
+// expected to have already shown a confirmation step before this fires.
+export async function releaseOrderNow(listingId: string): Promise<Order> {
+  return apiFetch(`/listings/${listingId}/order/release`, { method: "POST" });
+}
+
+// The seller's one-time "request more time to ship" action (Pending
+// Shipment view) — costs 10% of the item's price, refunded to the buyer
+// and deducted from the seller's own eventual payout, in exchange for
+// pushing ship_deadline out once (apps/api/internal/order.RequestShipExtension).
+// Irreversible and usable only once per order — the caller is expected to
+// have already shown a confirmation step before this fires.
+export async function requestShipExtension(listingId: string): Promise<Order> {
+  return apiFetch(`/listings/${listingId}/order/request-ship-extension`, { method: "POST" });
+}
+
 // Mirrors apps/api/internal/dispute exactly (design doc v2 §9).
 export type ClaimState =
   | "opened"
@@ -1554,7 +1785,13 @@ export type ClaimReasonCode =
   | "not_received_tracking_delivered"
   | "payment_fraud"
   | "buyers_remorse"
-  | "transit_damage";
+  | "transit_damage"
+  // The one reason code filable before delivery — while the order is
+  // merely "shipped," not yet "claim_window" — for "there's real tracking,
+  // it just never updated to delivered." Always routes to human review
+  // (see internal/dispute.autoAdjudicate's own doc comment), never an
+  // automatic refund either way.
+  | "not_received_tracking_stalled";
 
 export type ClaimResolution = "refund_buyer" | "deny" | "partial_refund" | "platform_absorb";
 export type ClaimLiableParty = "seller" | "buyer" | "platform";
@@ -1857,5 +2094,21 @@ export async function devAdjustTier(direction: "up" | "down"): Promise<{ tier: S
   return apiFetch("/me/seller/dev-tier-adjust", {
     method: "POST",
     body: JSON.stringify({ direction }),
+  });
+}
+
+// Account deletion (apps/api internal/user.DeleteAccount). blockers lists
+// what has to finish first — empty means the account can be deleted now.
+export async function getAccountDeletionBlockers(): Promise<string[]> {
+  const data = (await apiFetch("/me/delete-account")) as { blockers: string[] };
+  return data.blockers;
+}
+
+// Throws ApiError 409 (body: {"blockers": [...]}) if something opened up
+// since the check above.
+export async function deleteMyAccount(): Promise<void> {
+  await apiFetch("/me/delete-account", {
+    method: "POST",
+    body: JSON.stringify({ confirm: "DELETE" }),
   });
 }

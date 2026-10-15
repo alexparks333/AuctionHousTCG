@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { GAMES } from "@/lib/types";
+import { ENABLED_GAMES } from "@/lib/types";
 import { paramStr, hrefWithParams, type SearchParams } from "@/lib/search-params";
 
 // Plain links to `/?game=...`, not a client-side filter — clicking a bubble
@@ -30,7 +30,7 @@ export default function CategoryNav({
         >
           All Categories
         </Link>
-        {GAMES.map((game) => (
+        {ENABLED_GAMES.map((game) => (
           <Link
             key={game}
             href={hrefWithParams(searchParams, { game })}

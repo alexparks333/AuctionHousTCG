@@ -40,6 +40,10 @@ var (
 	ErrNotOwner            = errors.New("you don't own this listing")
 	ErrNotActive           = errors.New("this listing is no longer active")
 	ErrHasBids             = errors.New("this auction already has bids and can't be removed")
+	// ErrAccountSuspended/ErrListingSuspended mirror internal/auction's own
+	// pair — see that package's doc comment on the same names.
+	ErrAccountSuspended = errors.New("your account is temporarily suspended and can't make purchases")
+	ErrListingSuspended = errors.New("this seller is temporarily suspended and their listings can't be purchased")
 )
 
 // AllowDevDurations gates the short (1/2/5-minute) auction durations used to
@@ -151,13 +155,13 @@ type Listing struct {
 	EstimatedShippingCents *int64 `json:"estimatedShippingCents,omitempty"`
 	// RequestSignature is derived server-side (never client-supplied) from
 	// whichever price the seller submitted at Create/Update time — see
-	// shipping.RequestSignatureFromPrice. Distinct from the mandatory
-	// $500-final-sale-price rule (shipping.SignatureRequiredCents): this
-	// one fires off the listing's own starting bid/Buy It Now price, so a
-	// seller listing something valuable gets locked into signature
-	// confirmation from the moment the listing goes live, not just once it
-	// actually sells for enough. shipping.UpgradePreset ORs the two rules
-	// together at sale time.
+	// shipping.RequestSignatureFromPrice. This locks a listing into
+	// signature confirmation the moment it goes live, whenever its own
+	// starting bid/Buy It Now price already crosses the $250 bar — the
+	// same $250 bar shipping.UpgradePreset checks again at sale time
+	// against the FINAL price, so a $0.99-starting auction that only later
+	// climbs past $250 still ends up requiring one, even though this field
+	// stayed false the whole time it was listed.
 	RequestSignature bool      `json:"requestSignature"`
 	ImageUrls        []string  `json:"imageUrls"`
 	WatcherCount     int       `json:"watcherCount"`
@@ -273,8 +277,20 @@ type CreateInput struct {
 	// default), validated in Create against Preset.Valid() plus the
 	// free-preset/auction-format and free-preset/$100 restrictions
 	// documented on shipping.UpgradePreset's own doc comment.
-	ShippingPreset string   `json:"shippingPreset"`
-	ImageUrls      []string `json:"imageUrls"`
+	ShippingPreset string `json:"shippingPreset"`
+	// RequestSignature is the seller's own voluntary opt-in — "add
+	// signature confirmation" even on a listing that isn't (yet) priced
+	// high enough to require it. Only honored when the chosen
+	// ShippingPreset is already package-mechanism (shippo_ground_advantage,
+	// free_bubble_mailer, free_box) — Pitney Bowes' envelope labels don't
+	// support signature confirmation at all (see pitneybowes.go's
+	// BuyLabel doc comment), so a request against an envelope preset is
+	// silently dropped rather than erroring; the frontend never shows the
+	// checkbox for envelope options in the first place. ORed with the
+	// price-driven shipping.RequestSignatureFromPrice rule in Create/
+	// Update — either one crossing true locks it on.
+	RequestSignature bool     `json:"requestSignature"`
+	ImageUrls        []string `json:"imageUrls"`
 }
 
 const selectColumns = `
@@ -340,7 +356,7 @@ func Create(ctx context.Context, pool *pgxpool.Pool, sellerID string, in CreateI
 			return nil, ErrSellerNotOnboarded
 		}
 	}
-	if !catalog.IsValidGame(in.Game) {
+	if !catalog.IsValidGame(in.Game) || !catalog.IsEnabledGame(in.Game) {
 		return nil, ErrInvalidGame
 	}
 	if in.Format != FormatAuction && in.Format != FormatFixed {
@@ -371,19 +387,20 @@ func Create(ctx context.Context, pool *pgxpool.Pool, sellerID string, in CreateI
 	if in.Format == FormatAuction {
 		binPriceCents = in.BuyItNowPriceCents
 	}
-	// The listing-time signature-request heuristic (shipping.
-	// RequestSignatureFromPrice) — the "amount" it's checked against is
-	// whichever of the listing's own prices is highest and already known
-	// at creation time: a fixed listing's own price, an auction's Buy It
-	// Now price if it has one, or its starting bid otherwise. Never the
-	// eventual final sale price (unknowable yet for an auction) — that's
-	// shipping.SignatureRequiredCents' job, applied later at sale time and
-	// ORed with this one in shipping.UpgradePreset.
+	// The reference price for the listing-time signature-request heuristic
+	// (shipping.RequestSignatureFromPrice) — whichever of the listing's own
+	// prices is highest and already known at creation time: a fixed
+	// listing's own price, an auction's Buy It Now price if it has one, or
+	// its starting bid otherwise. Never the eventual final sale price
+	// (unknowable yet for an auction) — that's shipping.
+	// SignatureRequiredCents' job, applied later at sale time. The actual
+	// requestSignature boolean is computed further down, once preset is
+	// resolved — that's what decides whether a seller's voluntary opt-in
+	// even applies (envelope presets can't support it at all).
 	referencePriceCents := binPriceCents
 	if in.Format == FormatAuction && in.StartingBidCents > referencePriceCents {
 		referencePriceCents = in.StartingBidCents
 	}
-	requestSignature := shipping.RequestSignatureFromPrice(referencePriceCents)
 	if in.AllowOffers {
 		if binPriceCents <= 0 {
 			return nil, fmt.Errorf("%w: allowOffers requires a Buy It Now price", ErrInvalidInput)
@@ -426,6 +443,16 @@ func Create(ctx context.Context, pool *pgxpool.Pool, sellerID string, in CreateI
 		}
 		return nil, fmt.Errorf("%w: tracked envelope shipping isn't available on listings priced at $100 or more", ErrInvalidInput)
 	}
+	// A seller's voluntary "add signature confirmation" request only means
+	// anything on a preset that can actually carry it — Pitney Bowes'
+	// envelope labels don't support signature confirmation at all (see
+	// pitneybowes.go's BuyLabel doc comment), so a request against
+	// free_envelope/tracked_envelope is silently dropped here rather than
+	// rejected; the frontend never shows the checkbox for those options in
+	// the first place, this is just the server-side backstop. ORed with the
+	// price-driven rule — either one crossing true locks it on.
+	requestSignature := (in.RequestSignature && preset.Mechanism() == shipping.MechanismPackage) ||
+		shipping.RequestSignatureFromPrice(referencePriceCents)
 	var auctionLength time.Duration
 	if in.Format == FormatAuction {
 		d, ok := auctionDuration(in.DurationMinutes)
@@ -547,6 +574,20 @@ func BuyNowFixed(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID str
 	}
 	if buyerID == sellerID {
 		return nil, ErrSelfPurchase
+	}
+	var buyerSuspended, sellerSuspended bool
+	if err := tx.QueryRow(ctx, `
+		select
+			exists(select 1 from account_suspensions where user_id = $1 and now() < ends_at),
+			exists(select 1 from account_suspensions where user_id = $2 and now() < ends_at)
+	`, buyerID, sellerID).Scan(&buyerSuspended, &sellerSuspended); err != nil {
+		return nil, fmt.Errorf("check suspension status: %w", err)
+	}
+	if buyerSuspended {
+		return nil, ErrAccountSuspended
+	}
+	if sellerSuspended {
+		return nil, ErrListingSuspended
 	}
 	if status != "active" {
 		return nil, ErrAlreadySold
@@ -691,6 +732,9 @@ type UpdateInput struct {
 	AllowOffers    bool   `json:"allowOffers"`
 	MinOfferCents  int64  `json:"minOfferCents"`
 	ShippingPreset string `json:"shippingPreset"`
+	// RequestSignature mirrors CreateInput's own field exactly — see its
+	// doc comment.
+	RequestSignature bool `json:"requestSignature"`
 	// ImageUrls is the full, authoritative photo list in its final order
 	// (not a delta) — same "client sends the whole current state" shape as
 	// Create's own ImageUrls. Must be non-empty: a listing can't be edited
@@ -798,12 +842,15 @@ func Update(ctx context.Context, pool *pgxpool.Pool, id, sellerID string, in Upd
 	// fresh from whatever price is in effect after this edit (never just
 	// carried over from lst.RequestSignature), so raising a Buy It Now
 	// price past the threshold on an edit locks it on immediately, exactly
-	// like a fresh listing would.
+	// like a fresh listing would. Same envelope backstop as Create too — a
+	// voluntary request only applies when the (possibly newly-picked)
+	// preset can actually carry it.
 	referencePriceCents := binPriceCents
 	if referencePriceCents < startingBidCents {
 		referencePriceCents = startingBidCents
 	}
-	requestSignature := shipping.RequestSignatureFromPrice(referencePriceCents)
+	requestSignature := (in.RequestSignature && preset.Mechanism() == shipping.MechanismPackage) ||
+		shipping.RequestSignatureFromPrice(referencePriceCents)
 
 	if in.AllowOffers {
 		if binPriceCents <= 0 {
@@ -1001,12 +1048,28 @@ func ListActive(ctx context.Context, pool *pgxpool.Pool, f ListFilters) ([]Listi
 	if f.Sold {
 		statuses = []string{"active", "ended"}
 	}
-	query := `select ` + selectColumns + ` ` + fromClause + ` where l.status = any($1)`
+	// A currently-suspended seller's listings are excluded from the active
+	// marketplace feed entirely (the ship-deadline strike system,
+	// cmd/worker/order_timers.go's recordShipStrike) — derived live against
+	// account_suspensions, not a listings.status value, so nothing has to
+	// remember to bring them back once the suspension itself expires.
+	query := `
+		select ` + selectColumns + ` ` + fromClause + `
+		where l.status = any($1)
+			and not exists (select 1 from account_suspensions s where s.user_id = l.seller_id and now() < s.ends_at)
+	`
 	args := []any{statuses}
 
 	if f.SellerID != "" {
 		args = append(args, f.SellerID)
 		query += fmt.Sprintf(` and l.seller_id = $%d`, len(args))
+	} else {
+		// Public browsing/search only ever shows catalog.EnabledGames
+		// (Riftbound-only for now). A seller-scoped list (their own
+		// Selling page, their public profile) still shows every game they
+		// already have listed — hidden from browsing, not erased.
+		args = append(args, catalog.EnabledGameNames())
+		query += fmt.Sprintf(` and l.game = any($%d)`, len(args))
 	}
 	if f.Game != "" {
 		args = append(args, f.Game)
@@ -1127,8 +1190,9 @@ func ListActive(ctx context.Context, pool *pgxpool.Pool, f ListFilters) ([]Listi
 // CountsByGame returns the number of active listings per game, across the
 // whole site regardless of any filter — the real numbers shown next to each
 // category bubble in CategoryNav (CLAUDE.md §6.14). Zero-filled for every
-// game in catalog.AllGames so the frontend never has to guess whether a
-// missing key means zero or means "not fetched yet."
+// game in catalog.EnabledGames so the frontend never has to guess whether a
+// missing key means zero or means "not fetched yet." Disabled games are
+// left out entirely, matching ListActive's public-browse filter.
 //
 // Must mirror ListActive's own "still available" condition
 // (l.status = 'active' and (fixed-price or auction not yet ended)), not
@@ -1137,8 +1201,8 @@ func ListActive(ctx context.Context, pool *pgxpool.Pool, f ListFilters) ([]Listi
 // status-only filter here could still count an ended auction for up to one
 // worker interval after ListActive has already stopped showing it.
 func CountsByGame(ctx context.Context, pool *pgxpool.Pool) (map[string]int, error) {
-	counts := make(map[string]int, len(catalog.AllGames))
-	for _, g := range catalog.AllGames {
+	counts := make(map[string]int, len(catalog.EnabledGames))
+	for _, g := range catalog.EnabledGames {
 		counts[string(g)] = 0
 	}
 
@@ -1147,8 +1211,9 @@ func CountsByGame(ctx context.Context, pool *pgxpool.Pool) (map[string]int, erro
 		from listings l
 		left join auctions a on a.listing_id = l.id
 		where l.status = 'active' and (l.format = 'fixed' or a.ends_at > now())
+			and l.game = any($1)
 		group by l.game
-	`)
+	`, catalog.EnabledGameNames())
 	if err != nil {
 		return nil, fmt.Errorf("query listing counts: %w", err)
 	}

@@ -2,20 +2,15 @@ import Link from "next/link";
 
 type FooterLink = { label: string; href: string };
 
-// Every link defaults to "#" (unwired) unless a real destination exists —
-// only the Sell column and "Help & Support" point anywhere real right now.
-// Start selling / Seller fees / Seller tiers / Seller information all route
-// through pages that already exist (or, for Seller information, exist as of
-// this change) rather than being decorative like the rest of the footer
-// still is.
+// Every link points at a real page — add a link here only once its page
+// exists, never as a "#" placeholder. ("Terms" returns once the site-wide
+// Terms of Service is written; "Grading verification" once cert lookups are
+// real, CLAUDE.md §6.6.)
 const COLUMNS: { heading: string; links: FooterLink[] }[] = [
   {
     heading: "Buy",
     links: [
-      { label: "Pokémon", href: "#" },
-      { label: "Magic: The Gathering", href: "#" },
-      { label: "Yu-Gi-Oh!", href: "#" },
-      { label: "Sports Cards & Slabs", href: "#" },
+      { label: "Riftbound", href: "/?game=Riftbound" },
     ],
   },
   {
@@ -32,18 +27,17 @@ const COLUMNS: { heading: string; links: FooterLink[] }[] = [
   {
     heading: "Trust & Safety",
     links: [
-      { label: "Buyer protection", href: "#" },
-      { label: "Dispute resolution", href: "#" },
-      { label: "Grading verification", href: "#" },
+      { label: "Buyer protection", href: "/seller-terms#disputes" },
+      { label: "File a claim", href: "/support/claim" },
+      { label: "Contact support", href: "/support/contact" },
     ],
   },
   {
     heading: "Company",
     links: [
-      { label: "About", href: "#" },
+      { label: "About", href: "/about" },
       { label: "Help & Support", href: "/support" },
-      { label: "Terms", href: "#" },
-      { label: "Privacy", href: "#" },
+      { label: "Privacy", href: "/privacy" },
     ],
   },
 ];

@@ -17,11 +17,19 @@ export default function ThreadListItem({
     <button
       type="button"
       onClick={onSelect}
-      className={`flex w-full items-start gap-3 border-b border-brand-border px-4 py-3 text-left transition-colors ${
-        active ? "bg-brand-navy/[0.06]" : "hover:bg-brand-surface"
+      className={`relative flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-all ${
+        active
+          ? "bg-white shadow-sm ring-1 ring-brand-border"
+          : "hover:bg-white/70"
       }`}
     >
-      <Avatar label={name} size={40} />
+      {active && <span aria-hidden className="absolute inset-y-3 left-0 w-1 rounded-full bg-brand-gold" />}
+      <span className="relative shrink-0">
+        <Avatar label={name} size={40} />
+        {thread.unread && (
+          <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full bg-brand-gold ring-2 ring-white" />
+        )}
+      </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2">
           <p
@@ -41,7 +49,6 @@ export default function ThreadListItem({
           </span>
         </div>
         <div className="mt-1 flex items-center gap-1.5">
-          {thread.unread && <span className="h-2 w-2 shrink-0 rounded-full bg-brand-gold" />}
           {thread.lastMessageKind === "offer" ? (
             <>
               {/* Received (gold) vs sent (navy/blue) mirrors the same two
@@ -50,7 +57,7 @@ export default function ThreadListItem({
                   here rather than the usual light-tint pill, so it reads
                   as a real status flag at inbox-row glance size. */}
               <span
-                className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold text-white ${
+                className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold text-white ${
                   thread.lastMessageIsMine ? "bg-brand-navy" : "bg-brand-gold"
                 }`}
               >

@@ -103,6 +103,7 @@ export default function DevQuickSwitch({
   const MINIMIZED_KEY = "dev-quick-switch-minimized";
   const [minimized, setMinimized] = useState(false);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reads localStorage after hydration so the server render matches
     setMinimized(localStorage.getItem(MINIMIZED_KEY) === "1");
   }, []);
   function toggleMinimized() {
@@ -316,6 +317,7 @@ function DevTierAdjuster({ currentEmail }: { currentEmail: string | null }) {
   }
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load on mount
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentEmail]);

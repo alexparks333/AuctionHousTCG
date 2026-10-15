@@ -80,7 +80,7 @@ func main() {
 	}()
 	go func() {
 		defer wg.Done()
-		runOrderTimersLoop(ctx, pool, paymentClient)
+		runOrderTimersLoop(ctx, pool, paymentClient, mailClient, cfg.WebOrigin)
 	}()
 	go func() {
 		defer wg.Done()

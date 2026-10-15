@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import { CheckCircle2 } from "lucide-react";
@@ -6,6 +7,7 @@ import Footer from "@/components/Footer";
 import OrderStatusPanel from "@/components/OrderStatusPanel";
 import ClaimPanel from "@/components/ClaimPanel";
 import OrderReceipt from "@/components/OrderReceipt";
+import OrderAddonsList from "@/components/checkout/OrderAddonsList";
 import OrderBuyerCard from "@/components/OrderBuyerCard";
 import {
   ApiError,
@@ -142,8 +144,7 @@ export default async function OrderConfirmationPage({
 
             <div className="mt-6 flex items-center gap-4 rounded-xl bg-brand-surface p-4 text-left">
               {photo ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={photo} alt="" className="h-16 w-16 rounded-lg object-cover" />
+                <Image src={photo} alt="" width={64} height={64} className="h-16 w-16 rounded-lg object-cover" />
               ) : (
                 <div className="h-16 w-16 rounded-lg bg-gradient-to-br from-brand-navy/20 to-brand-gold/20" />
               )}
@@ -169,16 +170,17 @@ export default async function OrderConfirmationPage({
                 View listing
               </Link>
               <Link
-                href={isBuyer ? "/account/buy-history" : "/account/selling"}
+                href={isBuyer ? "/account/history?view=bought" : "/account/selling"}
                 className="rounded-full bg-brand-navy px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-navy-light"
               >
-                {isBuyer ? "Go to Buy History" : "Go to Selling"}
+                {isBuyer ? "Go to History" : "Go to Selling"}
               </Link>
             </div>
           </div>
 
           {order && (
             <>
+              <OrderAddonsList addons={order.addons} viewerIsSeller={isSeller} />
               <OrderStatusPanel initialOrder={order} viewerIsSeller={isSeller} />
               <ClaimPanel
                 listingId={listing.id}

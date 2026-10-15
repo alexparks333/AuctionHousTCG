@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"auctionhous-tcg/api/internal/kyc"
 	"auctionhous-tcg/api/internal/listing"
 	"auctionhous-tcg/api/internal/platform"
 )
@@ -42,7 +43,7 @@ func HandlePlaceBid(pool *pgxpool.Pool) http.HandlerFunc {
 				status = http.StatusNotFound
 			case errors.Is(err, ErrAuctionEnded), errors.Is(err, ErrBidTooLow), errors.Is(err, ErrConflict):
 				status = http.StatusConflict
-			case errors.Is(err, ErrSelfBid):
+			case errors.Is(err, ErrSelfBid), errors.Is(err, ErrAccountSuspended), errors.Is(err, ErrListingSuspended), errors.Is(err, kyc.ErrPurchaseNotAllowed), errors.Is(err, kyc.ErrExceedsPurchaseCap):
 				status = http.StatusForbidden
 			}
 			http.Error(w, err.Error(), status)

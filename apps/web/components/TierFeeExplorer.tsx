@@ -56,72 +56,72 @@ export default function TierFeeExplorer({
 
   return (
     <div>
-      <div className="flex flex-wrap gap-2">
-        {tiers.map((t) => (
-          <button
-            key={t.tier}
-            type="button"
-            onClick={() => setSelected(t.tier)}
-            className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
-              selected === t.tier
-                ? "border-brand-navy bg-brand-navy text-white"
-                : "border-brand-border bg-white text-gray-600 hover:border-brand-navy/40 hover:text-brand-navy"
-            }`}
-          >
-            {t.name}
-            {t.tier === initialTier && (
-              <span className={selected === t.tier ? "ml-1 text-white/60" : "ml-1 text-gray-400"}>
-                · you
-              </span>
-            )}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="inline-flex flex-wrap gap-1 rounded-full bg-brand-surface p-1 ring-1 ring-brand-border">
+          {tiers.map((t) => (
+            <button
+              key={t.tier}
+              type="button"
+              onClick={() => setSelected(t.tier)}
+              aria-pressed={selected === t.tier}
+              className={`rounded-full px-4 py-1.5 text-sm font-semibold transition-all ${
+                selected === t.tier
+                  ? "bg-brand-navy text-white shadow-md shadow-brand-navy/20"
+                  : "text-gray-600 hover:bg-white hover:text-brand-navy"
+              }`}
+            >
+              {t.name}
+              {t.tier === initialTier && (
+                <span className={selected === t.tier ? "ml-1 text-brand-gold-light" : "ml-1 text-gray-400"}>
+                  · you
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+        <p className="text-sm text-gray-500">
+          <span className={`font-bold ${active.accent}`}>{active.rate}</span> + $0.30 · no shipping, no tax
+        </p>
       </div>
 
-      <p className="mt-3 text-sm text-gray-500">
-        {active.name} tier ({active.rate} + $0.30), no shipping, no tax.
-      </p>
-
-      {/* This row alone breaks out of the page's normal max-w-3xl column —
-          `left-1/2 w-screen -translate-x-1/2` re-centers it on the full
-          viewport regardless of the parent's width, independent of
-          everything else on the page (the tier pills/description above,
-          the rest of app/tiers/page.tsx below). Its own max-w + generous
-          px is what gives this one area wide margins without touching
-          anyone else's. Capped at max-w-7xl so it doesn't stretch edge to
-          edge on a very wide monitor. max-w bumped up alongside the px
-          increase (not just the px alone) so the cards actually get
-          bigger, not squeezed thinner by wider padding eating into the
-          same fixed width. */}
-      <div className="relative left-1/2 w-screen -translate-x-1/2">
-        {/* grid-cols-5, not flex-wrap — a fixed 5-column grid always lays
-            out exactly 5 columns per row, so the last card (currently
-            $25,000) can never be the lone item wrapped onto its own row
-            the way a flex-wrap item with a min-width floor could. Columns
-            shrink together at narrower widths instead; text within a card
-            wrapping to a second line is fine, a whole card stranding alone
-            is what this specifically prevents. */}
-        <div className="mx-auto grid max-w-7xl grid-cols-5 gap-4 px-8 py-1 sm:px-20 lg:px-32">
-          {EXAMPLE_PRICES.map((price) => {
-            const { fee, net } = feeAndNet(price, ratePct);
-            return (
-              <div
-                key={price}
-                className="flex min-w-0 flex-col items-start gap-1.5 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-brand-border sm:p-5"
-              >
-                <p className="text-sm text-gray-500">${price.toLocaleString("en-US")} item</p>
-                {/* "You net" as its own small label directly above the
-                    figure it describes — same idea as "next to," but
-                    stacked instead of crammed onto one line, so a 5-digit
-                    net amount never wraps mid-number. */}
-                <p className="mt-1 text-sm text-gray-400">You net</p>
-                <p className="text-xl font-bold text-gray-900 sm:text-2xl">${fmt(net)}</p>
-                <p className="text-sm text-gray-400">AuctionHous Fee ${fmt(fee)}</p>
-                <p className="text-sm font-semibold text-brand-urgent">eBay&apos;s Fee: ${fmt(ebayFee(price))}</p>
-              </div>
-            );
-          })}
-        </div>
+      <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        {EXAMPLE_PRICES.map((price) => {
+          const { fee, net } = feeAndNet(price, ratePct);
+          const ebay = ebayFee(price);
+          return (
+            <div
+              key={price}
+              className="flex min-w-0 flex-col rounded-2xl bg-brand-surface/60 p-4 ring-1 ring-brand-border transition-all hover:-translate-y-0.5 hover:bg-white hover:shadow-md"
+            >
+              <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                ${price.toLocaleString("en-US")} sale
+              </p>
+              <p className="mt-3 text-[11px] text-gray-400">You keep</p>
+              <p className="truncate text-xl font-extrabold tracking-tight text-gray-900 sm:text-2xl">${fmt(net)}</p>
+              <dl className="mt-3 space-y-2 border-t border-brand-border/70 pt-3 text-xs">
+                <div className="flex items-end justify-between gap-2">
+                  <dt className="leading-tight text-gray-600">
+                    Our fee
+                    <span className="block text-[10px] text-gray-400">{active.rate}</span>
+                  </dt>
+                  <dd className="font-semibold text-gray-800">${fmt(fee)}</dd>
+                </div>
+                <div className="flex items-end justify-between gap-2">
+                  <dt className="leading-tight text-gray-500">
+                    Other providers
+                    <span className="block text-[10px] text-gray-400">{EBAY_RATE_PCT}%</span>
+                  </dt>
+                  <dd className="font-semibold text-brand-urgent line-through decoration-brand-urgent/40">
+                    ${fmt(ebay)}
+                  </dd>
+                </div>
+              </dl>
+              <p className="mt-3 rounded-lg bg-emerald-50 px-2 py-1 text-center text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-200">
+                +${fmt(ebay - fee)} more
+              </p>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

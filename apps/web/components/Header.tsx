@@ -5,6 +5,7 @@ import TopBar from "./TopBar";
 import CategoryNav from "./CategoryNav";
 import AccountMenu from "./AccountMenu";
 import NotificationBell from "./NotificationBell";
+import AccountBannedBanner from "./AccountBannedBanner";
 import { isSupabaseConfigured } from "@/lib/supabase/is-configured";
 import { getListingCounts, getMe, getMyNotifications, getMyThreads } from "@/lib/api";
 import { getCurrentSession } from "@/lib/session";
@@ -14,6 +15,7 @@ export default async function Header({
   searchParams = {},
   sticky = false,
   variant = "full",
+  showCategoryNav = true,
 }: {
   searchParams?: SearchParams;
   // The header (top bar, search, and category nav) scrolls away normally
@@ -28,6 +30,14 @@ export default async function Header({
   // form itself. Skips every session/API fetch below entirely, not just
   // hiding their output, since none of it is needed to render a logo.
   variant?: "full" | "logo-only";
+  // Suppresses just the game-bubble row at the bottom of the "full"
+  // variant — unlike "logo-only" above, everything else (top bar, search,
+  // notification bell, account menu) stays. Used by focused single-task
+  // account flows (KYC verification) where browsing by category is pure
+  // distraction, but the account menu/notifications still need to be
+  // reachable. counts is still fetched either way (cheap, and simpler
+  // than threading a second conditional through the Promise.all below).
+  showCategoryNav?: boolean;
 } = {}) {
   if (variant === "logo-only") {
     return (
@@ -81,6 +91,7 @@ export default async function Header({
 
   return (
     <header className={`bg-white shadow-sm ${sticky ? "sticky top-0 z-40" : ""}`}>
+      {me?.isBanned && <AccountBannedBanner variant="self" />}
       <TopBar tier={me?.tier ?? null} />
       <div className="flex items-center gap-3 py-0.5 pl-3 pr-10 sm:gap-4 sm:pl-4 sm:pr-12 lg:pl-5 lg:pr-14">
         <Link href="/" className="flex shrink-0 items-center gap-1">
@@ -177,7 +188,7 @@ export default async function Header({
         </div>
       </form>
 
-      <CategoryNav searchParams={searchParams} counts={counts} />
+      {showCategoryNav && <CategoryNav searchParams={searchParams} counts={counts} />}
     </header>
   );
 }

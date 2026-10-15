@@ -1,5 +1,7 @@
 package cardcatalog
 
+import "auctionhous-tcg/api/internal/catalog"
+
 // SupportedGames is every AuctionHous game TCG Haven's catalog actually
 // covers, in gameSlug's own order — what SearchAll loops over when a
 // caller (the Favorite Card widget picker) has no single game to search
@@ -10,7 +12,15 @@ var SupportedGames = []string{"Pokémon", "Disney Lorcana", "Riftbound"}
 // game keys ("catalog/{slug}/cards"). Only the three games TCG Haven
 // actually tracks have an entry — MTG, Yu-Gi-Oh!, and Sports Cards return
 // ok=false, meaning the Sell wizard just gets no suggestions for them.
+//
+// A game TCG Haven covers but the marketplace has disabled
+// (catalog.EnabledGames — Riftbound-only for now) also returns ok=false,
+// so neither Search nor SearchAll ever suggests a card that couldn't
+// actually be listed.
 func gameSlug(auctionHousGame string) (slug string, ok bool) {
+	if !catalog.IsEnabledGame(auctionHousGame) {
+		return "", false
+	}
 	switch auctionHousGame {
 	case "Pokémon":
 		return "pokemon", true

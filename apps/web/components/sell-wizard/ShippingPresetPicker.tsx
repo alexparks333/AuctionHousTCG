@@ -4,17 +4,11 @@ import { useEffect } from "react";
 import type { ShippingPreset } from "@/lib/types";
 import {
   TRACKED_ENVELOPE_CENTS,
-  SIGNATURE_REQUEST_THRESHOLD_CENTS,
+  PACKAGE_REQUIRED_CENTS,
+  SIGNATURE_REQUIRED_CENTS,
   SIGNATURE_SURCHARGE_APPROX_CENTS,
   formatPrice,
 } from "@/lib/types";
-
-// Mirrors apps/api/internal/shipping.PackageRequiredCents exactly — $100
-// and up must ship as a tracked package (Shippo), never an envelope
-// (Pitney Bowes' IMb tracking only proves transit, not delivery — not
-// strong enough evidence once real money is at stake). Checked here only
-// as a UX nicety; internal/listing.Create/Update re-validate regardless.
-const PACKAGE_REQUIRED_CENTS = 10000;
 
 const FREE_PRESETS: ShippingPreset[] = ["free_envelope", "free_bubble_mailer", "free_box"];
 
@@ -41,21 +35,21 @@ const SHIPPO_GROUND_ADVANTAGE_APPROX_RANGE = `~${formatPrice(517)} – ${formatP
 
 const FREE_OPTIONS: PresetOption[] = [
   {
-    value: "free_bubble_mailer",
-    label: "Bubble Mailer",
-    description: "You cover the cost of a tracked Shippo package.",
-    approxCents: 517,
-  },
-  {
     value: "free_envelope",
-    label: "Envelope",
-    description: "You cover the cost of a tracked Pitney Bowes envelope.",
+    label: "Tracked Envelope",
+    description: "You cover the cost of shipping a tracked envelope.",
     approxCents: TRACKED_ENVELOPE_CENTS,
   },
   {
+    value: "free_bubble_mailer",
+    label: "Tracked Bubble Mailer",
+    description: "You cover the cost of shipping a tracked bubble mailer.",
+    approxCents: 517,
+  },
+  {
     value: "free_box",
-    label: "Box",
-    description: "You cover the cost of a tracked Shippo package.",
+    label: "Tracked Package",
+    description: "You cover the cost of shipping a tracked package.",
     approxCents: 600,
   },
 ];
@@ -63,51 +57,82 @@ const FREE_OPTIONS: PresetOption[] = [
 // The Shipping picker body — shared by the Sell wizard's Step3Price and
 // the Edit Listing form (EditListingForm), so a pricing-threshold change
 // only ever needs to happen in one place. Pure UI: the caller owns
-// `value`/`onChange` and passes in whatever "is the final price already
-// known" figure applies to its own context (a fixed listing's own price,
-// or 0 for an auction, whose final price isn't knowable yet).
+// `value`/`onChange` and passes in the seller's own listing-time price
+// (referencePriceCents below) — the same figure drives both the $100 and
+// $250 thresholds for every format, fixed or auction.
+// Presets a signature can actually be attached to — Pitney Bowes' envelope
+// labels (free_envelope/tracked_envelope) don't support it at all (see
+// apps/api/internal/shipping/pitneybowes.go's BuyLabel doc comment), so
+// this list is exactly PresetOption's package-mechanism trio.
+const SIGNATURE_CAPABLE_PRESETS: ShippingPreset[] = ["shippo_ground_advantage", "free_bubble_mailer", "free_box"];
+
 export default function ShippingPresetPicker({
   value,
   onChange,
-  knownPriceCents,
   referencePriceCents,
+  requestSignature,
+  onRequestSignatureChange,
 }: {
   value: ShippingPreset;
   onChange: (preset: ShippingPreset) => void;
-  // >0 when the final price is already known (a fixed-price listing) —
-  // gates the one restriction that's actually checkable at this point
-  // (free_envelope/tracked_envelope unavailable at $100+). 0 for an
-  // auction, whose final price isn't known yet; the backend resolves the
-  // real mechanism at sale time instead (shipping.UpgradePreset).
-  knownPriceCents: number;
-  // Unlike knownPriceCents, this is always whatever price IS known at
-  // listing time — an auction's starting bid and/or Buy It Now price, or a
-  // fixed listing's own price, whichever is highest. Drives the
-  // $250 signature-request lock below (mirrors apps/api/internal/shipping.
-  // RequestSignatureFromPrice) — a real, separate rule from the $100/$500
-  // final-sale-price ones above, so it's checked against its own prop
-  // rather than overloading knownPriceCents.
+  // Whatever price IS known at listing time — an auction's starting bid
+  // and/or Buy It Now price, or a fixed listing's own price, whichever is
+  // highest. Drives both the $100 envelope-unavailable rule and the $250
+  // signature-request lock below (mirrors apps/api/internal/shipping.
+  // RequestSignatureFromPrice) — checked against the seller's own
+  // listing-time price, same for every format, since a starting bid this
+  // high guarantees the final sale price will be too (an auction's price
+  // only ever goes up from there).
   referencePriceCents: number;
+  // The seller's own voluntary "add signature confirmation" choice —
+  // meaningful (and shown) only while a signature-capable preset is
+  // selected; ORed server-side with the $250 price-driven rule
+  // (apps/api/internal/listing.Create/Update), so checking this below $250
+  // has the same real effect as crossing the price bar.
+  requestSignature: boolean;
+  onRequestSignatureChange: (v: boolean) => void;
 }) {
-  const overPackageThreshold = knownPriceCents > 0 && knownPriceCents >= PACKAGE_REQUIRED_CENTS;
-  const overSignatureThreshold = referencePriceCents >= SIGNATURE_REQUEST_THRESHOLD_CENTS;
+  const overPackageThreshold = referencePriceCents >= PACKAGE_REQUIRED_CENTS;
+  const overSignatureThreshold = referencePriceCents >= SIGNATURE_REQUIRED_CENTS;
+  // Envelope (paid or free) stops being an option at $100+, and stays off
+  // the table at $250+ too — but Free Shipping itself never gets disabled
+  // at either bar: a seller can always still pay for shipping themselves,
+  // they just have to do it with a real tracked package (bubble mailer or
+  // box), same restriction shippo_ground_advantage/paid shipping is under.
   const envelopeDisabled = overPackageThreshold || overSignatureThreshold;
-  const freeDisabled = overSignatureThreshold;
   const isFreeSelected = FREE_PRESETS.includes(value);
+  const signatureCapable = SIGNATURE_CAPABLE_PRESETS.includes(value);
 
-  // Once the seller's price crosses $250, Ground Advantage is the only
-  // real option left standing (Free Shipping and Tracked Envelope are both
-  // disabled below) — auto-select it rather than leaving whatever was
-  // previously chosen looking selectable but disabled underneath it. Only
+  // Once the seller's price crosses $250, envelope (either flavor) is no
+  // longer valid — auto-correct away from it to whichever package-mechanism
+  // preset the backend itself would upgrade to (shipping.UpgradePreset:
+  // free_envelope -> free_bubble_mailer, tracked_envelope ->
+  // shippo_ground_advantage), same mapping, so the UI never shows a
+  // disabled-but-still-"selected" envelope radio. Bubble mailer/box/Ground
+  // Advantage are all still perfectly valid at $250+ (just with signature
+  // now locked on below), so nothing forces a switch away from those. Only
   // runs when overSignatureThreshold actually flips, not on every
-  // keystroke/re-render, so it never fights a seller actively picking a
-  // different preset while already over the bar.
+  // keystroke/re-render.
   useEffect(() => {
-    if (overSignatureThreshold && value !== "shippo_ground_advantage") {
+    if (!overSignatureThreshold) return;
+    if (value === "free_envelope") {
+      onChange("free_bubble_mailer");
+    } else if (value === "tracked_envelope") {
       onChange("shippo_ground_advantage");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overSignatureThreshold]);
+
+  // Switching to an envelope preset makes a standing voluntary request
+  // meaningless (the backend would silently drop it anyway, see Create's
+  // own doc comment) — clear it here too so the checkbox never looks
+  // checked again if the seller switches back before submitting.
+  useEffect(() => {
+    if (!signatureCapable && requestSignature) {
+      onRequestSignatureChange(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signatureCapable]);
 
   return (
     <div className="flex flex-col gap-2">
@@ -115,24 +140,33 @@ export default function ShippingPresetPicker({
         label="Free Shipping"
         description="You pay for shipping — the buyer sees $0."
         checked={isFreeSelected}
-        disabled={freeDisabled}
+        disabled={false}
         onSelect={() => onChange("free_bubble_mailer")}
       />
 
       {isFreeSelected && (
         <div className="ml-4 flex flex-col gap-2 border-l-2 border-gray-200 py-1 pl-4">
           {FREE_OPTIONS.map((opt) => {
-            const disabled = freeDisabled || (opt.value === "free_envelope" && overPackageThreshold);
+            const disabled = opt.value === "free_envelope" && envelopeDisabled;
+            const selected = value === opt.value;
             return (
-              <PresetRadio
-                key={opt.value}
-                label={opt.label}
-                description={opt.description}
-                approxCost={`~${formatPrice(opt.approxCents)}`}
-                checked={value === opt.value}
-                disabled={disabled}
-                onSelect={() => onChange(opt.value)}
-              />
+              <div key={opt.value}>
+                <PresetRadio
+                  label={opt.label}
+                  description={opt.description}
+                  approxCost={`~${formatPrice(opt.approxCents)}`}
+                  checked={selected}
+                  disabled={disabled}
+                  onSelect={() => onChange(opt.value)}
+                />
+                {selected && SIGNATURE_CAPABLE_PRESETS.includes(opt.value) && (
+                  <SignatureCheckboxRow
+                    overSignatureThreshold={overSignatureThreshold}
+                    requestSignature={requestSignature}
+                    onRequestSignatureChange={onRequestSignatureChange}
+                  />
+                )}
+              </div>
             );
           })}
         </div>
@@ -146,42 +180,78 @@ export default function ShippingPresetPicker({
         disabled={envelopeDisabled}
         onSelect={() => onChange("tracked_envelope")}
       />
-      <div>
-        <PresetRadio
-          label="Tracked Package - Ground Advantage"
-          description="Bubble mailer, full tracking. Buyer pays the real rate — shown on your listing once it's live."
-          approxCost={SHIPPO_GROUND_ADVANTAGE_APPROX_RANGE}
-          checked={value === "shippo_ground_advantage"}
-          disabled={false}
-          onSelect={() => onChange("shippo_ground_advantage")}
+      <PresetRadio
+        label="Tracked Package - Ground Advantage"
+        description="Bubble mailer, full tracking. Buyer pays the real rate — shown on your listing once it's live."
+        approxCost={SHIPPO_GROUND_ADVANTAGE_APPROX_RANGE}
+        checked={value === "shippo_ground_advantage"}
+        disabled={false}
+        onSelect={() => onChange("shippo_ground_advantage")}
+      />
+      {value === "shippo_ground_advantage" && (
+        <SignatureCheckboxRow
+          overSignatureThreshold={overSignatureThreshold}
+          requestSignature={requestSignature}
+          onRequestSignatureChange={onRequestSignatureChange}
         />
-        {overSignatureThreshold && (
-          <div className="ml-4 mt-1.5 flex items-start gap-2 rounded-lg border border-brand-gold/30 bg-brand-gold/5 p-2.5">
-            <input type="checkbox" checked disabled className="mt-0.5 h-4 w-4 accent-brand-gold" />
-            <span className="flex-1">
-              <span className="flex items-baseline justify-between gap-2">
-                <span className="text-sm font-semibold text-gray-900">Signature Required</span>
-                <span className="text-xs font-medium text-gray-500">
-                  +~{formatPrice(SIGNATURE_SURCHARGE_APPROX_CENTS)}
-                </span>
-              </span>
-              <span className="block text-xs text-gray-500">
-                Required at $250+ — the carrier won't release this package without a signature at
-                delivery. Locked on for items this valuable.
-              </span>
-            </span>
-          </div>
-        )}
-      </div>
+      )}
 
       <p className="mt-1 text-xs text-gray-400">
         {overSignatureThreshold
-          ? "This price requires a tracked package with signature confirmation — free shipping and envelope options aren't available at $250+."
+          ? "This price requires a tracked bubble mailer or package (free or paid) with signature confirmation — envelope isn't available at $250+."
           : overPackageThreshold
-            ? "This price requires a tracked package — envelope options aren't available above $100."
-            : "Sales of $100+ always ship tracked, and $500+ require a signature — based on the final sale price, not what's picked here."}
+            ? "This price requires a tracked bubble mailer or package (free or paid) — envelope isn't available above $100."
+            : "Sales of $100+ require tracked shipping. Sales of $250+ require a signature."}
       </p>
     </div>
+  );
+}
+
+// The voluntary "add signature confirmation" toggle — rendered right under
+// whichever package-mechanism option is currently selected (Ground
+// Advantage, or Free Shipping's Tracked Bubble Mailer/Tracked Package),
+// never under an envelope option (Pitney Bowes can't carry a signature at
+// all, see SIGNATURE_CAPABLE_PRESETS). Locked checked once
+// overSignatureThreshold is true; otherwise a real, independent choice the
+// seller can make regardless of price.
+function SignatureCheckboxRow({
+  overSignatureThreshold,
+  requestSignature,
+  onRequestSignatureChange,
+}: {
+  overSignatureThreshold: boolean;
+  requestSignature: boolean;
+  onRequestSignatureChange: (v: boolean) => void;
+}) {
+  return (
+    <label
+      className={`ml-4 mt-1.5 flex items-start gap-2 rounded-lg border p-2.5 ${
+        overSignatureThreshold
+          ? "cursor-not-allowed border-brand-gold/30 bg-brand-gold/5 opacity-80"
+          : "cursor-pointer border-gray-200 hover:bg-brand-surface"
+      }`}
+    >
+      <input
+        type="checkbox"
+        checked={overSignatureThreshold || requestSignature}
+        disabled={overSignatureThreshold}
+        onChange={(e) => onRequestSignatureChange(e.target.checked)}
+        className="mt-0.5 h-4 w-4 accent-brand-gold"
+      />
+      <span className="flex-1">
+        <span className="flex items-baseline justify-between gap-2">
+          <span className="text-sm font-semibold text-gray-900">Signature Required</span>
+          <span className="text-xs font-medium text-gray-500">
+            +~{formatPrice(SIGNATURE_SURCHARGE_APPROX_CENTS)}
+          </span>
+        </span>
+        <span className="block text-xs text-gray-500">
+          {overSignatureThreshold
+            ? "Required at $250+ — locked on for items this valuable."
+            : "Optional — require a signature at delivery."}
+        </span>
+      </span>
+    </label>
   );
 }
 

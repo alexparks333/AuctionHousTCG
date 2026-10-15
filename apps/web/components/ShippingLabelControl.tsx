@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CheckCircle2, Loader2, ShieldCheck, Tag, XCircle } from "lucide-react";
+import { CheckCircle2, Loader2, Feather, Tag, XCircle } from "lucide-react";
 import {
   apiFetch,
   buyShippingLabel,
@@ -68,7 +68,7 @@ export default function ShippingLabelControl({
   // label will cost before buying one.
   estimatedShippingCents?: number;
   // Set once, at order creation, whenever the final sale price crosses
-  // shipping.SignatureRequiredCents ($500) — internal/shipping.UpgradePreset
+  // shipping.SignatureRequiredCents ($250) — internal/shipping.UpgradePreset
   // already forces the actual purchased label to require a carrier
   // signature at delivery regardless of this UI (BuyLabel passes it
   // straight into Shippo's extra.signature_confirmation), so this prop is
@@ -203,7 +203,7 @@ export default function ShippingLabelControl({
             </p>
             {signatureRequired && (
               <p className="mt-1 flex items-center gap-1 text-xs font-medium text-brand-gold">
-                <ShieldCheck size={13} /> Signature required at delivery
+                <Feather size={13} /> Signature required at delivery
               </p>
             )}
           </div>
@@ -305,7 +305,7 @@ export default function ShippingLabelControl({
       )}
       {signatureRequired && (
         <p className="mt-1 flex items-center gap-1 text-xs text-brand-gold">
-          <ShieldCheck size={13} /> This sale requires signature confirmation at delivery — adds a
+          <Feather size={13} /> This sale requires signature confirmation at delivery — adds a
           few dollars to the label cost, already included in your quote.
         </p>
       )}

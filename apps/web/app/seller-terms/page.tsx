@@ -15,7 +15,8 @@ const TIER_LADDER = [
   { name: "Bronze", rate: "6.50%", requirement: "15–49 completed orders" },
   { name: "Silver", rate: "6.25%", requirement: "50–149 completed orders" },
   { name: "Gold", rate: "6.00%", requirement: "150–499 completed orders" },
-  { name: "Hous Trust", rate: "5.50%", requirement: "500+ completed orders" },
+  { name: "Platinum", rate: "5.50%", requirement: "500+ completed orders" },
+  { name: "Hous Trust", rate: "Custom", requirement: "Platinum + application, by invitation" },
 ];
 
 const LIABILITY = [
@@ -36,13 +37,15 @@ const LIABILITY = [
 
 function Section({
   title,
+  id,
   children,
 }: {
   title: string;
+  id?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section className="mt-10">
+    <section id={id} className="mt-10 scroll-mt-24">
       <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
       <div className="mt-2 space-y-3 text-sm leading-relaxed text-gray-600">{children}</div>
     </section>
@@ -57,14 +60,14 @@ export default function SellerTermsPage() {
         <h1 className="text-2xl font-bold text-gray-900">Seller Terms of Service</h1>
         <p className="mt-2 text-sm text-gray-600">
           This page covers the rules specific to selling on AuctionHous - TCG — fees, payouts,
-          listing standards, and what happens when something goes wrong. It supplements, and doesn't
+          listing standards, and what happens when something goes wrong. It supplements, and doesn&apos;t
           replace, the general site Terms every account agrees to. By creating a listing, you agree
           to everything below.
         </p>
 
         <Section title="1. Who you're selling as">
           <p>
-            Every charge on AuctionHous - TCG is a Stripe Connect direct charge: a buyer's payment
+            Every charge on AuctionHous - TCG is a Stripe Connect direct charge: a buyer&apos;s payment
             goes straight into <em>your</em> Stripe account the instant it succeeds, not into a
             platform-held balance. That makes you the merchant of record for your own sales. Before
             your first listing goes live, Stripe verifies your identity (a one-time onboarding flow
@@ -72,7 +75,7 @@ export default function SellerTermsPage() {
           </p>
           <p>
             We never hold your funds. What we control is <em>timing</em> — when Stripe pays out
-            money that's already yours from your Stripe balance into your bank account, not whether
+            money that&apos;s already yours from your Stripe balance into your bank account, not whether
             you get it.
           </p>
         </Section>
@@ -80,7 +83,7 @@ export default function SellerTermsPage() {
         <Section title="2. Fees">
           <p>
             Every completed sale is charged a flat <strong>$0.30</strong> plus a percentage of the
-            item price and shipping (never sales tax), set by your seller tier below. There's no
+            item price and shipping (never sales tax), set by your seller tier below. There&apos;s no
             minimum-order exemption — the same formula applies whether the item is $2 or $2,000.
           </p>
           <div className="mt-3 overflow-hidden rounded-xl ring-1 ring-brand-border">
@@ -96,7 +99,7 @@ export default function SellerTermsPage() {
                 {TIER_LADDER.map((t) => (
                   <tr key={t.name}>
                     <td className="px-4 py-2 font-medium text-gray-900">{t.name}</td>
-                    <td className="px-4 py-2">{t.rate} + $0.30</td>
+                    <td className="px-4 py-2">{t.rate === "Custom" ? "Negotiated" : `${t.rate} + $0.30`}</td>
                     <td className="px-4 py-2 text-gray-500">{t.requirement}</td>
                   </tr>
                 ))}
@@ -115,7 +118,7 @@ export default function SellerTermsPage() {
           <p>
             Your net proceeds are the same no matter how the buyer pays — if a buyer chooses the
             discounted bank-transfer option, that discount comes out of platform margin, never out
-            of what you're paid.
+            of what you&apos;re paid.
           </p>
         </Section>
 
@@ -137,7 +140,7 @@ export default function SellerTermsPage() {
         <Section title="4. Listing standards">
           <ul className="list-disc space-y-1.5 pl-5">
             <li>Condition and grade must be accurate. This is the single highest-weighted factor in your feedback score and the most common source of disputes — describe flaws you can see, not just the ones you think matter.</li>
-            <li>Graded slabs require a real, verifiable cert number from PSA, BGS, or CGC. Listings with cert numbers that don't verify against the grading company's own lookup will be removed.</li>
+            <li>Graded slabs require a real, verifiable cert number from PSA, BGS, or CGC. Listings with cert numbers that don&apos;t verify against the grading company&apos;s own lookup will be removed.</li>
             <li>Photos must be of the actual card or slab being sold, not a stock image or a photo of a different copy.</li>
             <li>Required item specifics (game, set, card number, and condition or grade) must be filled in accurately — this is also what makes your listing findable in search and filters.</li>
           </ul>
@@ -165,9 +168,9 @@ export default function SellerTermsPage() {
           </p>
         </Section>
 
-        <Section title="7. Disputes and who's on the hook">
+        <Section id="disputes" title="7. Disputes and who's on the hook">
           <p>
-            We don't offer unconditional buyer protection — at our fee levels that can't be
+            We don&apos;t offer unconditional buyer protection — at our fee levels that can&apos;t be
             funded, so responsibility is assigned plainly instead of left ambiguous:
           </p>
           <div className="mt-3 overflow-hidden rounded-xl ring-1 ring-brand-border">
@@ -175,7 +178,7 @@ export default function SellerTermsPage() {
               <thead className="bg-white text-xs uppercase tracking-wide text-gray-500">
                 <tr>
                   <th className="px-4 py-2 font-medium">What happened</th>
-                  <th className="px-4 py-2 font-medium">Who's responsible</th>
+                  <th className="px-4 py-2 font-medium">Who&apos;s responsible</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-brand-border bg-white">
@@ -198,7 +201,7 @@ export default function SellerTermsPage() {
         <Section title="8. Account suspension">
           <p>
             We can suspend listing privileges pending review if your account shows a pattern of
-            disputes, a counterfeit-item finding, or repeated listing-standards violations. You'll
+            disputes, a counterfeit-item finding, or repeated listing-standards violations. You&apos;ll
             be told the specific reason, not a generic notice — the same standard we hold tier
             demotions to.
           </p>
@@ -213,7 +216,7 @@ export default function SellerTermsPage() {
         </Section>
 
         <p className="mt-10 border-t border-brand-border pt-6 text-xs text-gray-400">
-          Questions about a specific fee, payout, or dispute? Reach out through your account's
+          Questions about a specific fee, payout, or dispute? Reach out through your account&apos;s
           support contact rather than relying on this page alone — it describes the general
           rules, not your specific case.
         </p>

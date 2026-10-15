@@ -134,7 +134,7 @@ func writeOfferError(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusForbidden)
 	case errors.Is(err, ErrOffersNotAllowed), errors.Is(err, ErrSelfOffer), errors.Is(err, ErrInvalidAmount),
 		errors.Is(err, ErrBelowMinimum), errors.Is(err, ErrListingNotActive), errors.Is(err, ErrAlreadyPending),
-		errors.Is(err, ErrNotPending):
+		errors.Is(err, ErrNotPending), errors.Is(err, ErrAccountSuspended), errors.Is(err, ErrListingSuspended):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, ErrListingUnavailable):
 		http.Error(w, err.Error(), http.StatusConflict)

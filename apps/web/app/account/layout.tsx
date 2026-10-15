@@ -36,7 +36,10 @@ export default async function AccountLayout({
 
   return (
     <div className="flex min-h-screen flex-col bg-brand-surface">
-      <Header />
+      {/* Account pages show their own tab row (Profile, Watchlist, ...)
+          instead of the marketplace's category row — product decision:
+          one sub-row at a time. */}
+      <Header showCategoryNav={false} />
       <AccountTabs unreadMessageCount={unreadMessageCount} />
       <main className="flex-1">{children}</main>
       <Footer />

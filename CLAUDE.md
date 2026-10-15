@@ -392,6 +392,18 @@ How the pieces fit together:
   reset, point the Go API at a self-rolled auth flow), not a rewrite of the rest of the
   marketplace.
 
+**Account deletion is self-serve** (Account Settings → "Delete account", `internal/user/delete.go`,
+`GET`/`POST /me/delete-account`). The `users` row is never removed — orders, reviews, claims, payouts
+and messages reference it — so deletion refuses while anything is in flight (open orders/claims, live
+bids, unpaid wins), ends live listings/singles/offers, deletes addresses/watchlist/notifications,
+deletes their Storage photos except those of listings that ever had an order (kept as order history and
+claim/chargeback evidence; edit history included), scrubs the row's personal data (username → NULL, which every display path shows as "Deleted user";
+email → a `deleted+{id}@deleted.invalid` placeholder so the real address can sign up again), stamps
+`deleted_at`, and deletes the Supabase Auth login via the admin API (needs
+`SUPABASE_SERVICE_ROLE_KEY`; without it the routes aren't registered). `WithBanGuard` blocks writes
+from a deleted account's still-valid token. Kept on purpose: `identity_fingerprint_hash` and
+`account_suspensions` (so deletion can't dodge a ban) and the Stripe ids.
+
 **Google sign-in (OAuth):** `GoogleSignInButton` (used on both `/signup` and
 `/login` — Supabase's `signInWithOAuth` creates the account on first use, so one button
 serves both flows) calls `supabase.auth.signInWithOAuth({ provider: 'google' })`, which
@@ -445,8 +457,8 @@ reason to.
   `internal/listing/listing.go`, checked in `Create`): 2 days, 3.5 days, or 7 days for
   real listings. A `durationMinutes` of 1/2/5 minutes is also accepted, but only when
   `listing.AllowDevDurations` is true — set in `cmd/api/main.go` from
-  `platform.Config.Environment` (`APP_ENV`, defaults to `"development"`, so these are
-  on by default until `APP_ENV=production` is set somewhere). Exists purely to dissect
+  `platform.Config.Environment` (`APP_ENV`, defaults to `"production"` — only an explicit
+  `APP_ENV=development`, set in the local `apps/api/.env`, turns these on). Exists purely to dissect
   the bidding engine without waiting days per test auction — the Sell wizard's
   duration `<select>` (`Step3Price.tsx`) only renders the 1/2/5-minute options when
   `process.env.NODE_ENV === "development"`, the same dead-code-elimination pattern as
@@ -498,6 +510,14 @@ reason to.
   involved, same shape as Supabase Auth. A listing requires at least one photo
   (`ErrInvalidInput` otherwise) — enforced in `internal/listing.Create`, not just the
   wizard's UI.
+  **Photos are shrunk in the browser before upload** (`lib/imageResize.ts`: always re-encoded, which strips EXIF/GPS; 2500px long side,
+  JPEG q0.88, EXIF rotation applied; HEIC converted where the browser can decode it) on every
+  upload path — Sell wizard, phone QR upload, order/claim evidence. The 10MB limit is **per photo**
+  (bucket `file_size_limit` + `lib/storage.ts` + `photosession`'s `MaxBytesReader`), not per listing.
+  **Every listing photo renders through `next/image` with a real `sizes` value** (`ListingImage`'s
+  `CARD_IMAGE_SIZES` for cards, explicit px for small thumbnails) — without it Next assumes 100vw and
+  a 240px card downloaded a 3840px file (278KB vs ~60KB). Never render a listing photo with a raw
+  `<img>` (that ships the full original).
 - **Watchers are real** (`internal/watchlist`, `watchlist` table, `0006_watchlist`
   migration) — the "N Watchers" badge on a listing's detail page is a live
   `count(*)`, never a stored/fabricated number. `GET/POST/DELETE /listings/{id}/watch`
@@ -967,6 +987,103 @@ reading the API docs more carefully.
     correction already did, so this didn't need new state-management shape anywhere it
     was added.
 
+
+### 6.20 Riftbound-only focus, the Singles Shop, and "Add Singles To Your Order"
+
+The marketplace's growth bet is **bundling: getting a buyer to take several cards from one
+seller in one order/shipment**, instead of one card per transaction. Built Riftbound-first.
+
+- **Riftbound-only mode** — `catalog.EnabledGames` (Go) / `ENABLED_GAMES` (`lib/types.ts`), both
+  `["Riftbound"]`. Gates public browse/search (`ListActive` without a `SellerID`),
+  `CountsByGame`, catalog search (`cardcatalog.gameSlug`), new listings (`listing.Create`), and
+  the Sell wizard/category bubbles. Other games are *hidden from browsing, not erased*: existing
+  listings, orders, claims, seller profiles, the seller's own Selling page, and direct links all
+  still work. Re-enabling a game = adding it back to both lists.
+- **Singles Shop** (`internal/singles`, `shop_singles`, migration `0062_singles_shop`) — a
+  seller's stock of catalog singles sold by quantity: pick a TCG Haven catalog card, a
+  condition/foil variant, a quantity, a price. **No seller photos** — rendered with the
+  catalog's standard image (`SingleCardIcon`), the deliberate opposite of §6.16's "listings never
+  use catalog images" rule, because a single is a stock item, not a specific photographed copy.
+  Card name/set/number/image are snapshotted server-side from `cardcatalog.Lookup`, never taken
+  from the client. Re-adding a variant merges (quantity adds, price replaced). Soft delete
+  (`removed_at`). Seller UI: `/account/singles`; public, in-stock-only view on the seller profile.
+- **Singles are cheap cards only: Commons, Uncommons, and Rares** (`cardcatalog.SinglesRarities`,
+  explicit product decision) — Epics, Alt Arts, Showcase, Overnumbered, Signature/Star, Promo,
+  and Metal prints are chase cards sold as regular photo listings. The rule lives once, in
+  `cardcatalog.singlesEligible`, exposed as `Card.singlesEligible` / `SetInfo.singlesCount`; it
+  also checks the printed code (`publicCode`), because Unleashed/Vendetta label some alt-art,
+  overnumbered, and signature prints with the base card's rarity ("Rare"). Enforced on add
+  (`singles.ErrNotEligible`), on buyer-facing lists, and in `resolveAddons`.
+- **Prices are standardized, never seller-set** (`internal/singles/pricing.go`, explicit product
+  decision): every copy of a card in the same condition/finish costs the same in every shop, so
+  nobody undercuts. Price = TCGplayer market price (via TCG Haven) **rounded down** to the ladder
+  10¢ / 25¢ / 35¢ / 50¢ / 75¢ / $1 / $1.50 / $2 / $2.50 / $3.50 / $5 — always at or under market,
+  raised only when below the 10¢ floor, capped at $5 (sellers may still stock a pricier card; the
+  Stock drawer warns them it'll sell at $5). Moderately Played drops one step; **only NM/LP/MP
+  allowed** (no HP/DMG). Sellers set quantity only. `price_cents` is a cache of the derivation,
+  refreshed by `singles.RunRepricer` (API process, every 5 min) so the checkout/Claim code keeps
+  reading one column. Mirrored in `lib/types.ts` (`SINGLES_PRICE_LADDER_CENTS`, `singlesPriceCents`).
+- **Finishes: Riftbound Commons/Uncommons come in Non-foil and Foil** (separate stock rows, each
+  priced from its own market price); **Rares and up are foil-only** (`cardcatalog.foilOnly` →
+  `Card.foilOnly`), so `singles.Add` always stores them as foil. Migration `0063` flipped older
+  non-foil Rare rows. Buyers pick the finish in the checkout dialog's variant sheet.
+- **Seller UI is modeled on TCG Haven's Cardex** (`SinglesShopStudio`): game + set picker on the
+  left (sets grouped from TCG Haven's `registry/main` doc via `GET /catalog/sets`, set cards via
+  `GET /catalog/cards`), a search box over the whole game, cards in full color if stocked and
+  greyed out if not, and a slide-over (`StockDrawer`) to stock a card (condition, foil, quantity) and see its
+  standardized price.
+- **"Add Singles To Your Order"** (`internal/auction/addons.go`, `components/checkout/`) — on the
+  checkout page for a card someone won or is buying, they can add that seller's in-stock singles
+  and other fixed-price listings; one payment, one order, one shipment. UI: a compact "Add Singles To Your Order"
+  row above the payment card (`AddSinglesBar`) opens the seller's shop in a dialog
+  (`SinglesBrowser`) laid out like the seller's Cardex-style studio — set sidebar, game-wide
+  search, every card shown, in color if this seller has it and greyed out if not. Trust boundary: the
+  client only ever sends ids + quantities; `resolveAddons` prices everything from the DB and
+  records what the PaymentIntent authorized in `checkout_addons` (keyed by PaymentIntent id —
+  not Stripe metadata, which caps values at 500 chars). `HandleBuyNow` reads those rows back by
+  the verified PaymentIntent id, then `claimAddons` takes them atomically (compare-and-swap on
+  stock *and* authorized price) **before** the primary purchase, so a sold-out single cancels the
+  payment instead of charging for something that can't ship; `releaseAddons` undoes the claim if
+  the primary purchase then loses its race. A replayed buy-now for a PaymentIntent that already
+  has an order is a 409 and never re-claims.
+  **Sold-out handling:** `AddonUnavailableError` lists *every* failing line (`resolveAddons` and
+  `claimAddons` keep checking after the first failure) as "Sorry, someone bought these singles
+  before you: Rengar (NM, Foil) — sold out, …" (product wording). The checkout page also keeps
+  stock in sync: `CheckoutBundle` calls `router.refresh()` every 30s, when the picker opens, and on
+  any 422 (signalled via `lib/checkoutEvents.ts`), trims the cart to the copies left, and shows the
+  same message.
+- **Orders stay one-primary-item**: add-ons live in `order_addons`, not extra `order_items`
+  rows — every existing order reader (lists, claims, reviews, worker timers) assumes exactly one
+  `order_items` row per order, and that invariant is untouched. `order.GetForListing` falls back
+  to `order_addons`, so an add-on listing's `/order/{id}` resolves to its bundle order. The order
+  page shows the add-ons as the seller's packing list (`OrderAddonsList`). Buy/Sold History
+  (`auction.MyPurchases`/`MySales` → `HistoryRow`) fold add-ons into the main card's row
+  (`bundleCardCount`/`bundleCents`, Bundle tag) and never list an add-on listing on its own; both
+  live on one page, `/account/history` (Sold / Bought toggle, `?view=sold|bought`; the old
+  `/account/buy-history`/`/account/sold-history` redirect there), 10 rows per page (`HistoryPager`, `?page=N`). Cancellations
+  (worker unpaid/unshipped timers, ACH failure webhook, banned-fingerprint refund) call
+  `order.ReleaseAddons`, which restocks singles and voids the rows.
+- **Shipping upgrades by card count** — `shipping.UpgradeForItemCount`: past `EnvelopeMaxCards`
+  (10, mirrored as `ENVELOPE_MAX_CARDS`) a letter-mechanism order becomes
+  `shippo_ground_advantage` with a live quote, **even from `free_envelope`** — explicit product
+  decision: the seller's free shipping covered their one listed card, not a big bundle the buyer
+  chose to add, so the buyer pays the package rate. Applied identically at intent time and at
+  order creation.
+- **Seller profile pages are fixed, not customizable** (explicit product decision): header
+  (`ProfileHeader` — avatar, member since, seller/buyer ratings, bio, message button), their
+  listings, then their Singles Shop (a preview of their 5 priciest in-stock cards plus
+  "Open Their Singles Shop", which opens `SinglesBrowser` browse-only — no `onChange`), then
+  reviews (`ProfileReviews`: a Seller Reviews / Buyer Reviews toggle — `#reviews` / `#buyer-reviews`, linked
+  from the header's rating tiles; every rating feeds the star summary, only reviews with a comment are
+  listed, each with its date; buyer reviews come from `GET /users/{u}/buyer-stats`' `reviews`). The
+  old paint/sticker/widget canvas was removed front to
+  back (components, `/me/stickers|canvas|widgets` routes, `user.Set*`); the `profile_stickers`/
+  `profile_widgets`/`profile_canvas` columns and `profile-canvas` bucket are left in place, unused.
+- **Not built yet:** add-ons only work through the real Stripe path (the no-Stripe mock path
+  never creates orders, so `CheckoutBundle` hides the panel there); add-ons can't be partially
+  refunded/returned individually through claims; `packages/shared-contracts/openapi.yaml` wasn't
+  updated (it isn't maintained for any recent endpoint).
+
 ---
 
 ## 7. Compliance flags (non-engineering, but architecture-shaping)
@@ -1131,6 +1248,12 @@ have Docker and would rather run Redis locally than use a free Upstash instance.
 
 **Contracts:** any new API endpoint gets added to `packages/shared-contracts/openapi.yaml`
 first; Go and TypeScript types are generated from it, not duplicated by hand.
+
+**CI:** `.github/workflows/ci.yml` runs on every PR and push to `main` — API: gofmt, `go vet`,
+`go build`, `go test -race`; Web: `npm ci`, `npm run lint`, `tsc --noEmit`, `next build`. Neither job
+uses secrets (the Go tests are self-contained; the web app builds with no env). Keep both green: lint
+must stay at 0 errors — the few existing `react-hooks/set-state-in-effect` exemptions each carry a
+`-- reason`; don't add new ones without one. `main` should have branch protection requiring both jobs.
 
 **Commits:** no enforced convention yet — establish one (e.g. Conventional Commits) in
 the first PR that adds a second contributor, not preemptively for a solo scaffold.

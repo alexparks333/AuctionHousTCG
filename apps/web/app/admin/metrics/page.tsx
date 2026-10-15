@@ -13,16 +13,20 @@ export default async function AdminMetricsPage() {
   const local = await getLocalSession();
   if (!local) redirect("/login");
 
+  // try/catch rather than .catch(() => { error = ... }): reassigning
+  // `error` from inside a callback trips the React Compiler lint rule.
   let error = "";
-  const metrics = await getAdminMetrics(local.accessToken).catch((err) => {
+  let metrics: Awaited<ReturnType<typeof getAdminMetrics>> | null = null;
+  try {
+    metrics = await getAdminMetrics(local.accessToken);
+  } catch (err) {
     error =
       err instanceof ApiError && err.status === 403
         ? "You don't have access to this page."
         : err instanceof Error
           ? err.message
           : "Failed to load metrics.";
-    return null;
-  });
+  }
 
   return (
     <div className="mx-auto w-full max-w-4xl">

@@ -1,7 +1,13 @@
-import { Check } from "lucide-react";
+import { Camera, Check, FileText, Tag } from "lucide-react";
 
-const STEPS = ["Details", "Photos", "Price"];
+const STEPS = [
+  { label: "Details", hint: "What card is it?", Icon: FileText },
+  { label: "Photos", hint: "Show its condition", Icon: Camera },
+  { label: "Price", hint: "Price & shipping", Icon: Tag },
+];
 
+// The Sell wizard's progress tracker: each step's icon, name and a short
+// hint, joined by bars that fill in as steps are completed.
 export default function StepBubbles({
   current,
   onStepClick,
@@ -14,57 +20,57 @@ export default function StepBubbles({
   onStepClick?: (step: number) => void;
 }) {
   return (
-    <div className="flex items-center justify-center">
-      {STEPS.map((label, i) => {
+    <ol className="flex items-center">
+      {STEPS.map(({ label, hint, Icon }, i) => {
         const step = i + 1;
         const state = step < current ? "done" : step === current ? "active" : "upcoming";
-        const clickable = step <= current && step !== current && Boolean(onStepClick);
+        const clickable = step < current && Boolean(onStepClick);
 
         return (
-          <div key={label} className="flex items-center">
+          <li key={label} className={`flex items-center ${step < STEPS.length ? "flex-1" : ""}`}>
             <button
               type="button"
               disabled={!clickable}
               onClick={() => onStepClick?.(step)}
               aria-label={`Go to step ${step}: ${label}`}
-              className={`flex flex-col items-center gap-2 rounded-lg ${
+              aria-current={state === "active" ? "step" : undefined}
+              className={`group flex items-center gap-3 rounded-xl text-left ${
                 clickable ? "cursor-pointer" : state === "active" ? "cursor-default" : "cursor-not-allowed"
               }`}
             >
-              <div
-                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-semibold transition-all duration-300 ${
-                  state === "done"
-                    ? `bg-brand-navy text-white ${clickable ? "hover:bg-brand-navy-light" : ""}`
-                    : state === "active"
-                      ? "scale-110 bg-brand-gold text-white shadow-lg shadow-brand-gold/30"
-                      : "border border-gray-300 bg-white text-gray-400"
-                }`}
-              >
-                {state === "done" ? (
-                  <Check size={17} className="animate-pop-in" />
-                ) : (
-                  step
-                )}
-              </div>
               <span
-                className={`text-xs font-medium transition-colors duration-300 ${
-                  state === "upcoming" ? "text-gray-400" : "text-gray-800"
+                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl transition-all duration-300 ${
+                  state === "done"
+                    ? "bg-brand-navy text-brand-gold-light group-hover:bg-brand-navy-light"
+                    : state === "active"
+                      ? "bg-brand-gold text-white shadow-lg shadow-brand-gold/30 ring-4 ring-brand-gold/15"
+                      : "bg-gray-100 text-gray-400"
                 }`}
               >
-                {label}
+                {state === "done" ? <Check size={18} strokeWidth={2.5} className="animate-pop-in" /> : <Icon size={18} />}
+              </span>
+              <span className="hidden sm:block">
+                <span
+                  className={`block text-sm font-semibold leading-tight ${
+                    state === "upcoming" ? "text-gray-400" : "text-gray-900"
+                  }`}
+                >
+                  {label}
+                </span>
+                <span className="block text-xs text-gray-400">{hint}</span>
               </span>
             </button>
             {step < STEPS.length && (
-              <div className="relative mx-3 mb-5 h-0.5 w-12 shrink-0 overflow-hidden rounded-full bg-gray-200 sm:w-24">
-                <div
-                  className="absolute inset-y-0 left-0 bg-brand-navy transition-all duration-500 ease-out"
+              <span className="relative mx-3 h-1 flex-1 overflow-hidden rounded-full bg-gray-100 sm:mx-4">
+                <span
+                  className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-brand-navy to-brand-gold transition-all duration-500 ease-out"
                   style={{ width: step < current ? "100%" : "0%" }}
                 />
-              </div>
+              </span>
             )}
-          </div>
+          </li>
         );
       })}
-    </div>
+    </ol>
   );
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import QRCode from "react-qr-code";
-import { Smartphone } from "lucide-react";
+import { ChevronRight, Smartphone } from "lucide-react";
 import { createPhotoUploadSession, getPhotoUploadSessionPhotosClient } from "@/lib/api";
 
 // Matches MessagesApp.tsx's OPEN_THREAD_POLL_MS — this panel only polls
@@ -63,10 +63,16 @@ export default function PhoneUploadPanel({
       <button
         type="button"
         onClick={handleExpand}
-        className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-500 transition-colors hover:border-brand-navy hover:bg-brand-surface hover:text-brand-navy"
+        className="group flex w-full items-center gap-3 rounded-2xl border border-gray-200 p-3.5 text-left transition-colors hover:border-brand-navy/30 hover:bg-brand-surface"
       >
-        <Smartphone size={16} />
-        Or scan to upload from your phone
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-navy/5 text-brand-navy">
+          <Smartphone size={18} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold text-gray-900">Use your phone&apos;s camera</span>
+          <span className="block text-xs text-gray-500">Scan a QR code — photos show up here as you take them</span>
+        </span>
+        <ChevronRight size={18} className="text-gray-400 transition-transform group-hover:translate-x-0.5" />
       </button>
     );
   }
@@ -77,7 +83,7 @@ export default function PhoneUploadPanel({
   const qrUrl = session ? `${window.location.origin}/sell/phone-upload/${session.id}` : "";
 
   return (
-    <div className="flex flex-col items-center gap-3 rounded-2xl border border-gray-200 bg-brand-surface p-5 text-center">
+    <div className="flex flex-col items-center gap-3 rounded-2xl border border-gray-200 bg-gradient-to-b from-brand-surface to-white p-6 text-center">
       {error && <p className="text-xs text-brand-urgent">{error}</p>}
       {qrUrl && (
         <>

@@ -190,19 +190,81 @@ func (c *Client) Retrieve(ctx context.Context, paymentIntentID string) (*stripe.
 // Capture actually charges the authorized card — only ever called after
 // the atomic purchase (listing.BuyNowFixed / auction.BuyNow) has already
 // committed in our own database, i.e. this buyer has definitely won the
-// listing. Returns the captured PaymentIntent (with LatestCharge expanded)
-// so the caller can record the resulting charge id on the order —
-// internal/order.ReleaseFunds doesn't need it (a plain balance-drawing
-// Transfer is enough at this volume), but it's useful provenance to have on
-// the order row regardless.
+// listing. Returns the captured PaymentIntent (with LatestCharge and
+// PaymentMethod both expanded) so the caller can record the resulting
+// charge id on the order — internal/order.ReleaseFunds doesn't need it (a
+// plain balance-drawing Transfer is enough at this volume), but it's
+// useful provenance to have on the order row regardless. PaymentMethod is
+// expanded specifically so pi.PaymentMethod.Card.Fingerprint /
+// .USBankAccount.Fingerprint is available with no extra round-trip — the
+// ban-evasion fingerprint check (internal/auction/buynow.go) needs it
+// immediately after capture, and a brand-new card's fingerprint genuinely
+// isn't knowable any earlier than this.
 func (c *Client) Capture(ctx context.Context, paymentIntentID string) (*stripe.PaymentIntent, error) {
 	pi, err := c.sc.V1PaymentIntents.Capture(ctx, paymentIntentID, &stripe.PaymentIntentCaptureParams{
-		Expand: []*string{stripe.String("latest_charge")},
+		Expand: []*string{stripe.String("latest_charge"), stripe.String("payment_method")},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("capture payment intent: %w", err)
 	}
 	return pi, nil
+}
+
+// PaymentMethodFingerprint pulls the card/bank-account fingerprint off a
+// PaymentIntent whose PaymentMethod was expanded (Capture does this) —
+// Stripe's own stable identifier for "this exact physical card/bank
+// account," constant across different Stripe customers/accounts using it.
+// Empty if PaymentMethod wasn't expanded or the type isn't card/
+// us_bank_account (this app only ever offers those two rails).
+func PaymentMethodFingerprint(pi *stripe.PaymentIntent) string {
+	if pi == nil {
+		return ""
+	}
+	return FingerprintOfMethod(pi.PaymentMethod)
+}
+
+// FingerprintOfMethod is PaymentMethodFingerprint's cousin for a
+// PaymentMethod fetched directly rather than off an expanded PaymentIntent
+// — used by internal/auction/checkout.go's pre-charge ban-evasion check
+// against a buyer's already-saved card/bank, where there's no PaymentIntent
+// yet at all.
+func FingerprintOfMethod(pm *stripe.PaymentMethod) string {
+	if pm == nil {
+		return ""
+	}
+	if pm.Card != nil {
+		return pm.Card.Fingerprint
+	}
+	if pm.USBankAccount != nil {
+		return pm.USBankAccount.Fingerprint
+	}
+	return ""
+}
+
+// CreateIdentityVerificationSession starts a Stripe Identity hosted flow
+// for userID — KYC level 2 (internal/kyc, Plan B / CLAUDE.md §7's
+// chargeback-fraud ban system). Type "document" with RequireIDNumber is
+// what actually gets both an uploaded government ID AND an ID-number
+// (SSN, in the US) check performed against it — Stripe's own hosted flow
+// collects and verifies the number directly; this backend never sees or
+// stores it, only this session's id and its eventual verified/failed
+// outcome (see internal/webhook's identity.verification_session.verified
+// case). ClientReferenceID carries our own user id through so the webhook
+// can resolve which user to stamp identity_verified_at onto.
+func (c *Client) CreateIdentityVerificationSession(ctx context.Context, userID string) (*stripe.IdentityVerificationSession, error) {
+	vs, err := c.sc.V1IdentityVerificationSessions.Create(ctx, &stripe.IdentityVerificationSessionCreateParams{
+		Type: stripe.String(string(stripe.IdentityVerificationSessionTypeDocument)),
+		Options: &stripe.IdentityVerificationSessionCreateOptionsParams{
+			Document: &stripe.IdentityVerificationSessionCreateOptionsDocumentParams{
+				RequireIDNumber: stripe.Bool(true),
+			},
+		},
+		ClientReferenceID: stripe.String(userID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create identity verification session: %w", err)
+	}
+	return vs, nil
 }
 
 // Cancel releases an authorization hold without charging the card — used

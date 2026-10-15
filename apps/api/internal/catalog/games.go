@@ -28,3 +28,32 @@ func IsValidGame(g string) bool {
 	}
 	return false
 }
+
+// EnabledGames is the subset of AllGames the marketplace is currently open
+// for — Riftbound only for now, an explicit product decision to focus the
+// launch (and the Singles Shop, internal/singles) on one game before
+// widening back out. Other games' data is untouched: existing listings,
+// orders, claims, seller profiles, and direct links all keep working; this
+// only gates public browsing/search, category counts, card-catalog search,
+// and creating new listings. Re-enabling a game is adding it back here
+// (and to ENABLED_GAMES in apps/web/lib/types.ts), not a migration.
+var EnabledGames = []Game{GameRiftbound}
+
+func IsEnabledGame(g string) bool {
+	for _, game := range EnabledGames {
+		if string(game) == g {
+			return true
+		}
+	}
+	return false
+}
+
+// EnabledGameNames is EnabledGames as plain strings, for passing straight
+// into a Postgres `= any($n)` parameter.
+func EnabledGameNames() []string {
+	names := make([]string, len(EnabledGames))
+	for i, g := range EnabledGames {
+		names[i] = string(g)
+	}
+	return names
+}

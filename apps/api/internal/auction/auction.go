@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"auctionhous-tcg/api/internal/kyc"
 	"auctionhous-tcg/api/internal/notification"
 )
 
@@ -18,6 +19,14 @@ var (
 	ErrBidTooLow       = errors.New("bid does not meet the minimum required amount")
 	ErrConflict        = errors.New("bid conflicted with a concurrent bid — please retry")
 	ErrSelfBid         = errors.New("sellers cannot bid on their own listing")
+	// ErrAccountSuspended/ErrListingSuspended are the ship-deadline strike
+	// system's narrow enforcement (internal/order's cancelUnshippedOrders,
+	// account_suspensions) — a suspended account can't buy anything, and a
+	// suspended seller's own listings can't be bought from, both derived
+	// from a live query against account_suspensions rather than a mutable
+	// flag (see that table's migration comment).
+	ErrAccountSuspended = errors.New("your account is temporarily suspended and can't place bids")
+	ErrListingSuspended = errors.New("this seller is temporarily suspended and their listings can't be bid on")
 )
 
 const maxRetries = 5
@@ -110,6 +119,29 @@ func attemptBid(ctx context.Context, pool *pgxpool.Pool, listingID, bidderID str
 
 	if bidderID == sellerID {
 		return nil, ErrSelfBid
+	}
+
+	var bidderSuspended, sellerSuspended bool
+	if err := tx.QueryRow(ctx, `
+		select
+			exists(select 1 from account_suspensions where user_id = $1 and now() < ends_at),
+			exists(select 1 from account_suspensions where user_id = $2 and now() < ends_at)
+	`, bidderID, sellerID).Scan(&bidderSuspended, &sellerSuspended); err != nil {
+		return nil, fmt.Errorf("check suspension status: %w", err)
+	}
+	if bidderSuspended {
+		return nil, ErrAccountSuspended
+	}
+	if sellerSuspended {
+		return nil, ErrListingSuspended
+	}
+
+	level, err := kyc.LevelForUser(ctx, tx, bidderID)
+	if err != nil {
+		return nil, fmt.Errorf("check kyc level: %w", err)
+	}
+	if err := kyc.CheckPurchase(level, maxBidCents); err != nil {
+		return nil, err
 	}
 
 	now := time.Now()

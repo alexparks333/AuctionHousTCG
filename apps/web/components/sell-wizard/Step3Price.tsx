@@ -1,6 +1,8 @@
 "use client";
 
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
+import { ArrowLeft, Check, Gavel, Loader2, Tag, Zap } from "lucide-react";
+import StepHeader, { StepFooter, primaryButtonClass, secondaryButtonClass } from "./StepHeader";
 import type { WizardData, UpdateField } from "../SellWizard";
 import { formatPrice } from "@/lib/types";
 import MoneyInput from "./MoneyInput";
@@ -47,6 +49,10 @@ export default function Step3Price({
       : 0;
   const hasBinPrice = binPriceCents > 0;
 
+  // The minimum-offer example tracks the Buy It Now price: about 15% under
+  // it, rounded to the nearest dollar (and always strictly below it).
+  const suggestedMinOffer = suggestMinOffer(binPriceCents);
+
   // Mirrors internal/listing.Create's own minOfferCents validation — a
   // minimum offer at or above the Buy It Now price makes no sense (the
   // buyer would just pay the BIN price instead), so this is caught live
@@ -67,19 +73,22 @@ export default function Step3Price({
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-5">
-      <div>
-        <h2 className="text-lg font-semibold text-gray-900">Set the price</h2>
-        <p className="text-sm text-gray-500">Auction or fixed price, plus shipping.</p>
-      </div>
+      <StepHeader icon={<Tag size={20} />} step={3} title="Set the price">
+        Auction or fixed price, plus how it ships.
+      </StepHeader>
 
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid gap-3 sm:grid-cols-2">
         <FormatButton
+          icon={<Gavel size={18} />}
           label="Auction"
+          description="Buyers bid — highest bid when time runs out wins."
           selected={data.format === "auction"}
           onClick={() => update("format", "auction")}
         />
         <FormatButton
+          icon={<Zap size={18} />}
           label="Buy It Now"
+          description="A fixed price — the first buyer gets it."
           selected={data.format === "fixed"}
           onClick={() => update("format", "fixed")}
         />
@@ -173,7 +182,7 @@ export default function Step3Price({
                 label="Minimum offer (optional)"
                 value={data.minOffer}
                 onChange={(v) => update("minOffer", v)}
-                placeholder="e.g. 45.00"
+                placeholder={suggestedMinOffer ? `e.g. ${suggestedMinOffer}` : "e.g. 20.00"}
                 error={
                   minOfferTooHigh
                     ? `Must be less than ${formatPrice(binPriceCents)} — that's your Buy It Now price.`
@@ -201,32 +210,54 @@ export default function Step3Price({
         <ShippingPresetPicker
           value={data.shippingPreset}
           onChange={(v) => update("shippingPreset", v)}
-          knownPriceCents={isFixed ? priceCents : 0}
           referencePriceCents={referencePriceCents}
+          requestSignature={data.requestSignature}
+          onRequestSignatureChange={(v) => update("requestSignature", v)}
         />
       </FormSection>
 
-      {error && <p className="text-sm text-brand-urgent">{error}</p>}
+      {error && (
+        <p className="rounded-xl border border-brand-urgent/30 bg-brand-urgent/5 px-4 py-3 text-sm font-medium text-brand-urgent">
+          {error}
+        </p>
+      )}
 
-      <div className="mt-2 flex justify-between">
-        <button
-          type="button"
-          onClick={onBack}
-          className="rounded-full border border-gray-300 px-6 py-2.5 text-sm font-semibold text-gray-700 transition-colors hover:bg-brand-surface"
-        >
-          Back
+      <StepFooter>
+        <button type="button" onClick={onBack} className={secondaryButtonClass}>
+          <ArrowLeft size={16} /> Back
         </button>
         <button
           type="submit"
           disabled={submitting || minOfferTooHigh}
           title={minOfferTooHigh ? "Fix the minimum offer above before listing" : undefined}
-          className="rounded-full bg-brand-gold px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-brand-gold-light disabled:opacity-60"
+          className={primaryButtonClass}
         >
-          {submitting ? "Listing..." : "List it"}
+          {submitting ? (
+            <>
+              <Loader2 size={16} className="animate-spin" /> Listing...
+            </>
+          ) : (
+            <>
+              <Check size={16} strokeWidth={2.5} /> List it
+            </>
+          )}
         </button>
-      </div>
+      </StepFooter>
     </form>
   );
+}
+
+// ~15% below the Buy It Now price, rounded to the nearest dollar, as a
+// dollars string ("23.00"). Rounding can land on the price itself for
+// cheap cards (e.g. $3 -> $2.55 -> $3), so it's pulled down a dollar then;
+// under $2 it falls back to the exact 15%-off amount in cents.
+function suggestMinOffer(binCents: number): string | null {
+  if (binCents <= 0) return null;
+  let dollars = Math.round((binCents * 0.85) / 100);
+  if (dollars * 100 >= binCents) dollars -= 1;
+  if (dollars >= 1) return `${dollars}.00`;
+  const cents = Math.max(1, Math.floor(binCents * 0.85));
+  return cents < binCents ? (cents / 100).toFixed(2) : null;
 }
 
 // One visually consistent card per pricing concern (Price, Buy It Now,
@@ -244,13 +275,13 @@ function FormSection({
 }: {
   title: string;
   optional?: boolean;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
-    <section className="rounded-xl border border-gray-200 p-4">
-      <h3 className="text-sm font-semibold text-gray-900">
+    <section className="rounded-2xl border border-gray-200 bg-gray-50/40 p-5">
+      <h3 className="text-sm font-bold text-gray-900">
         {title}
-        {optional && <span className="ml-1.5 font-normal text-gray-400">(optional)</span>}
+        {optional && <span className="ml-1.5 text-xs font-medium text-gray-400">Optional</span>}
       </h3>
       <div className="mt-3">{children}</div>
     </section>
@@ -262,11 +293,15 @@ function FormSection({
 // determines which of the sections below even apply), so it gets more
 // visual weight than a plain radio row would give it.
 function FormatButton({
+  icon,
   label,
+  description,
   selected,
   onClick,
 }: {
+  icon: ReactNode;
   label: string;
+  description: string;
   selected: boolean;
   onClick: () => void;
 }) {
@@ -275,13 +310,23 @@ function FormatButton({
       type="button"
       onClick={onClick}
       aria-pressed={selected}
-      className={`rounded-xl border px-4 py-3 text-sm font-semibold transition-colors ${
+      className={`flex items-start gap-3 rounded-2xl border p-4 text-left transition-all ${
         selected
-          ? "border-brand-navy bg-brand-navy text-white"
-          : "border-gray-200 bg-white text-gray-700 hover:bg-brand-surface"
+          ? "border-brand-navy bg-brand-navy text-white shadow-lg shadow-brand-navy/20"
+          : "border-gray-200 bg-white text-gray-700 hover:-translate-y-0.5 hover:border-gray-300 hover:shadow-sm"
       }`}
     >
-      {label}
+      <span
+        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+          selected ? "bg-white/10 text-brand-gold-light" : "bg-gray-100 text-gray-500"
+        }`}
+      >
+        {icon}
+      </span>
+      <span>
+        <span className="block text-sm font-bold">{label}</span>
+        <span className={`mt-0.5 block text-xs ${selected ? "text-white/70" : "text-gray-500"}`}>{description}</span>
+      </span>
     </button>
   );
 }

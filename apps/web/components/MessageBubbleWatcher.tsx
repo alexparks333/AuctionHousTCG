@@ -103,7 +103,6 @@ export default function MessageBubbleWatcher({ children }: { children?: React.Re
 
     try {
       const { threads, unreadCount } = await getMyThreadsClient();
-      console.log("[MBW-DEBUG] poll " + JSON.stringify({ userId, unreadCount, initializedBefore: initialized.current, persistedExists: !!loadSeen(userId) }));
 
       if (!initialized.current) {
         initialized.current = true;
@@ -141,6 +140,7 @@ export default function MessageBubbleWatcher({ children }: { children?: React.Re
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- first poll on mount, then on an interval
     poll();
     const id = setInterval(poll, POLL_MS);
     return () => clearInterval(id);

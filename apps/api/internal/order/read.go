@@ -36,15 +36,22 @@ type Order struct {
 	// seller's payout never depends on which rail the buyer chose).
 	// Surfaced so the receipt's "what your buyer paid" math actually sums
 	// to ChargedCents for both rails, not just the card rail.
-	DiscountCents         int64      `json:"discountCents"`
-	TaxCents              int64      `json:"taxCents"`
-	ChargedCents          int64      `json:"chargedCents"`
-	TrackingNumber        *string    `json:"trackingNumber,omitempty"`
-	Carrier               *string    `json:"carrier,omitempty"`
-	ShippedAt             *time.Time `json:"shippedAt,omitempty"`
-	DeliveredAt           *time.Time `json:"deliveredAt,omitempty"`
-	ClaimDeadline         *time.Time `json:"claimDeadline,omitempty"`
-	ReleasedAt            *time.Time `json:"releasedAt,omitempty"`
+	DiscountCents  int64      `json:"discountCents"`
+	TaxCents       int64      `json:"taxCents"`
+	ChargedCents   int64      `json:"chargedCents"`
+	TrackingNumber *string    `json:"trackingNumber,omitempty"`
+	Carrier        *string    `json:"carrier,omitempty"`
+	ShippedAt      *time.Time `json:"shippedAt,omitempty"`
+	DeliveredAt    *time.Time `json:"deliveredAt,omitempty"`
+	ClaimDeadline  *time.Time `json:"claimDeadline,omitempty"`
+	ReleasedAt     *time.Time `json:"releasedAt,omitempty"`
+	// ShipDeadline is the seller's ship-by deadline, stamped by
+	// Transition itself the instant an order lands in awaiting_ship (see
+	// ShipWindowHours) — nil outside that state and for orders created
+	// before this feature existed. ShipExtensionUsedAt is non-nil once
+	// RequestShipExtension has been used (one-time per order).
+	ShipDeadline          *time.Time `json:"shipDeadline,omitempty"`
+	ShipExtensionUsedAt   *time.Time `json:"shipExtensionUsedAt,omitempty"`
 	CreatedAt             time.Time  `json:"createdAt"`
 	StripePaymentIntentID *string    `json:"-"`
 	// ShippingPreset/SignatureRequired snapshot internal/shipping.
@@ -61,6 +68,64 @@ type Order struct {
 	ProviderShipmentID *string `json:"-"`
 	LabelCostCents     *int64  `json:"labelCostCents,omitempty"`
 	LabelURL           *string `json:"labelUrl,omitempty"`
+	// Addons are the items bundled onto this order at checkout ("Add
+	// Singles To Your Order", order_addons) — what the seller packs in the
+	// same shipment alongside ListingID. Only populated by
+	// HandleGetForListing (the order page); empty everywhere else.
+	Addons []Addon `json:"addons"`
+}
+
+// Addon is one order_addons line, denormalized for display: a Singles Shop
+// single (Kind "single", ShopSingleID set, catalog snapshot fields) or a
+// same-seller fixed-price listing (Kind "listing", ListingID set).
+type Addon struct {
+	Kind           string  `json:"kind"`
+	ShopSingleID   *string `json:"shopSingleId,omitempty"`
+	ListingID      *string `json:"listingId,omitempty"`
+	Title          string  `json:"title"`
+	SetName        string  `json:"setName"`
+	CardNumber     string  `json:"cardNumber"`
+	Condition      string  `json:"condition"`
+	IsFoil         bool    `json:"isFoil"`
+	ImageURL       *string `json:"imageUrl,omitempty"`
+	Quantity       int     `json:"quantity"`
+	UnitPriceCents int64   `json:"unitPriceCents"`
+	Voided         bool    `json:"voided"`
+}
+
+// ListAddons returns orderID's add-ons, singles first, then listings.
+func ListAddons(ctx context.Context, pool *pgxpool.Pool, orderID string) ([]Addon, error) {
+	rows, err := pool.Query(ctx, `
+		select
+			case when a.shop_single_id is not null then 'single' else 'listing' end,
+			a.shop_single_id, a.listing_id,
+			coalesce(s.card_name, l.title, ''),
+			coalesce(s.set_name, l.set_name, ''),
+			coalesce(s.card_number, l.card_number, ''),
+			coalesce(s.condition, l.condition, ''),
+			coalesce(s.is_foil, false),
+			coalesce(s.image_url, l.image_urls[1]),
+			a.quantity, a.unit_price_cents, a.voided_at is not null
+		from order_addons a
+		left join shop_singles s on s.id = a.shop_single_id
+		left join listings l on l.id = a.listing_id
+		where a.order_id = $1
+		order by (a.shop_single_id is null), coalesce(s.card_name, l.title), a.created_at
+	`, orderID)
+	if err != nil {
+		return nil, fmt.Errorf("query order add-ons: %w", err)
+	}
+	defer rows.Close()
+	addons := []Addon{}
+	for rows.Next() {
+		var a Addon
+		if err := rows.Scan(&a.Kind, &a.ShopSingleID, &a.ListingID, &a.Title, &a.SetName, &a.CardNumber,
+			&a.Condition, &a.IsFoil, &a.ImageURL, &a.Quantity, &a.UnitPriceCents, &a.Voided); err != nil {
+			return nil, fmt.Errorf("scan order add-on: %w", err)
+		}
+		addons = append(addons, a)
+	}
+	return addons, rows.Err()
 }
 
 const selectOrderColumns = `
@@ -68,7 +133,8 @@ const selectOrderColumns = `
 	o.tier_pct_at_sale,
 	o.subtotal_cents, o.shipping_cents, o.seller_fee_cents, o.seller_net_cents,
 	o.discount_cents, o.tax_cents, o.charged_cents, o.tracking_number, o.carrier,
-	o.shipped_at, o.delivered_at, o.claim_deadline, o.released_at, o.created_at,
+	o.shipped_at, o.delivered_at, o.claim_deadline, o.released_at,
+	o.ship_deadline, o.ship_extension_used_at, o.created_at,
 	o.stripe_payment_intent_id, o.shipping_preset, o.signature_required,
 	o.provider_shipment_id, o.label_cost_cents, o.label_url
 `
@@ -80,7 +146,8 @@ func scanOrder(row pgx.Row) (*Order, error) {
 		&o.TierPctAtSale,
 		&o.SubtotalCents, &o.ShippingCents, &o.SellerFeeCents, &o.SellerNetCents,
 		&o.DiscountCents, &o.TaxCents, &o.ChargedCents, &o.TrackingNumber, &o.Carrier,
-		&o.ShippedAt, &o.DeliveredAt, &o.ClaimDeadline, &o.ReleasedAt, &o.CreatedAt,
+		&o.ShippedAt, &o.DeliveredAt, &o.ClaimDeadline, &o.ReleasedAt,
+		&o.ShipDeadline, &o.ShipExtensionUsedAt, &o.CreatedAt,
 		&o.StripePaymentIntentID, &o.ShippingPreset, &o.SignatureRequired,
 		&o.ProviderShipmentID, &o.LabelCostCents, &o.LabelURL,
 	)
@@ -105,17 +172,36 @@ func GetByID(ctx context.Context, pool *pgxpool.Pool, orderID string) (*Order, e
 	return scanOrder(row)
 }
 
-// GetForListing returns the order tied to listingID, via order_items'
-// unique listing_id — the natural join point, since a listing sells at
-// most once, ever.
+// GetForListing returns the *live* order tied to listingID — order_items'
+// listing_id is only unique among rows where voided_at is null (a listing
+// can accumulate several historical order_items rows over its life now:
+// an unpaid/unshipped attempt that died, then a real sale, possibly via a
+// second-chance offer), so this must always filter to the live one or it
+// could resolve to a long-dead, already-cancelled order instead — notably
+// relied on by auction/buynow.go's createOrderRecord, which uses this
+// exact lookup to decide whether to finalize an existing pending order
+// rather than insert a second one.
+//
+// A listing bought as a checkout add-on (order_addons) resolves to the
+// bundle order it was bought in — the returned Order's ListingID is still
+// that order's primary listing, since it's one order and one shipment.
 func GetForListing(ctx context.Context, pool *pgxpool.Pool, listingID string) (*Order, error) {
-	row := pool.QueryRow(ctx, `
+	o, err := scanOrder(pool.QueryRow(ctx, `
 		select `+selectOrderColumns+`
 		from orders o
 		join order_items oi on oi.order_id = o.id
-		where oi.listing_id = $1
-	`, listingID)
-	return scanOrder(row)
+		where oi.listing_id = $1 and oi.voided_at is null
+	`, listingID))
+	if !errors.Is(err, ErrNotFound) {
+		return o, err
+	}
+	return scanOrder(pool.QueryRow(ctx, `
+		select `+selectOrderColumns+`
+		from orders o
+		join order_items oi on oi.order_id = o.id
+		join order_addons a on a.order_id = o.id
+		where a.listing_id = $1 and a.voided_at is null
+	`, listingID))
 }
 
 // GetByPaymentIntentID looks up an order by the Stripe PaymentIntent that

@@ -9,6 +9,10 @@ const AXES = [
   { key: "trustworthiness", label: "Trustworthiness" },
 ] as const;
 
+function formatReviewDate(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+}
+
 // Shared between the public seller profile page and the owner's own
 // Account Settings page — same reviews, same rendering, just a different
 // header/context around it. `username` + `isOwner` are only needed so the
@@ -48,7 +52,14 @@ export default function ReviewsList({
             <StarRating rating={review.overallRating} size={14} />
           </div>
 
-          <p className="mt-1 text-xs text-gray-500">Verified purchase: {review.listingTitle}</p>
+          <p className="mt-1 text-xs text-gray-500">
+            {/* The date is shown on purpose: a pile of near-identical
+                reviews written the same day is easy to spot. */}
+            <time dateTime={review.createdAt} className="font-medium text-gray-700">
+              Written {formatReviewDate(review.createdAt)}
+            </time>{" "}
+            · Verified purchase: {review.listingTitle}
+          </p>
 
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
             {AXES.map((axis) => (

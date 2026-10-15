@@ -21,8 +21,13 @@ export default async function AdminClaimDetailPage({
   const local = await getLocalSession();
   if (!local) redirect("/login");
 
+  // try/catch rather than .catch(() => { error = ... }): reassigning
+  // `error` from inside a callback trips the React Compiler lint rule.
   let error = "";
-  const detail = await getAdminClaim(id, local.accessToken).catch((err) => {
+  let detail: Awaited<ReturnType<typeof getAdminClaim>> | null = null;
+  try {
+    detail = await getAdminClaim(id, local.accessToken);
+  } catch (err) {
     if (err instanceof ApiError && err.status === 404) notFound();
     error =
       err instanceof ApiError && err.status === 403
@@ -30,8 +35,7 @@ export default async function AdminClaimDetailPage({
         : err instanceof Error
           ? err.message
           : "Failed to load this claim.";
-    return null;
-  });
+  }
 
   // Best-effort — a failure here (e.g. the same 403 the claim fetch above
   // already surfaces) shouldn't block the rest of the decide screen from
@@ -134,7 +138,7 @@ function PhotoThumbRow({ urls }: { urls: string[] }) {
     <div className="mt-1 flex flex-wrap gap-1.5">
       {urls.map((url, i) => (
         <div key={url + i} className="relative h-14 w-14 shrink-0 overflow-hidden rounded-md border border-gray-200">
-          <Image src={url} alt={`Photo ${i + 1}`} fill className="object-cover" />
+          <Image src={url} alt={`Photo ${i + 1}`} fill sizes="56px" className="object-cover" />
         </div>
       ))}
     </div>

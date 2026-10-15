@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import StepBubbles from "./StepBubbles";
 import CardSearch from "./sell-wizard/CardSearch";
-import Step1Details from "./sell-wizard/Step1Details";
+import Step1Details, { OTHER_GRADER } from "./sell-wizard/Step1Details";
 import Step2Photos from "./sell-wizard/Step2Photos";
 import Step3Price from "./sell-wizard/Step3Price";
 import { apiFetch } from "@/lib/api";
@@ -18,7 +18,10 @@ export interface WizardData {
   rarity: string;
   condition: string;
   isGraded: boolean;
+  // "PSA"/"BGS"/"CGC", or "Other" with the name typed into
+  // gradingCompanyOther — the listing stores whichever name applies.
   gradingCompany: string;
+  gradingCompanyOther: string;
   grade: string;
   certNumber: string;
   // Ordered list, up to 10 — position 0 is the cover photo (what
@@ -55,19 +58,28 @@ export interface WizardData {
   // what's picked here. The three free_* presets are only valid on
   // fixed-price listings under $100 — Step3Price hides them otherwise.
   shippingPreset: ShippingPreset;
+  // The seller's own voluntary "add signature confirmation" opt-in —
+  // meaningful only alongside a package-mechanism preset (Ground
+  // Advantage, or Free Shipping's Tracked Bubble Mailer/Tracked Package);
+  // Pitney Bowes' envelope options can't support it at all. ORed
+  // server-side with the $250 price-driven rule (apps/api/internal/
+  // listing.Create), so checking this below $250 has the same real effect
+  // as crossing the price bar.
+  requestSignature: boolean;
 }
 
 export type UpdateField = <K extends keyof WizardData>(key: K, value: WizardData[K]) => void;
 
 const INITIAL: WizardData = {
   title: "",
-  game: "Pokémon",
+  game: "Riftbound",
   setName: "",
   cardNumber: "",
   rarity: "",
   condition: "",
   isGraded: false,
   gradingCompany: "PSA",
+  gradingCompanyOther: "",
   grade: "",
   certNumber: "",
   photos: [],
@@ -80,6 +92,7 @@ const INITIAL: WizardData = {
   allowOffers: false,
   minOffer: "",
   shippingPreset: "tracked_envelope",
+  requestSignature: false,
 };
 
 function dollarsToCents(value: string): number {
@@ -106,17 +119,23 @@ export default function SellWizard() {
       return;
     }
 
-    // Mirrors apps/api/internal/listing.Create's own validation — checked
-    // here too so the seller sees this before submitting, not just as a
-    // server error after the fact. The server re-checks regardless; this
-    // is a UX nicety, not the actual enforcement. Only a known (fixed)
-    // price that's already too high for envelope shipping is rejected
-    // here — an auction's final price isn't known yet, so both
-    // free_envelope and tracked_envelope stay valid there (the backend
-    // resolves the real mechanism at sale time).
+    // Mirrors ShippingPresetPicker's own $100 envelope-disable rule — same
+    // referencePriceCents shape (starting bid/Buy It Now price/fixed
+    // price, whichever is highest), so a seller who picked Tracked
+    // Envelope while the price was still low and then raised it past $100
+    // (visually greyed out in the picker, but not auto-cleared the way the
+    // $250 signature bar auto-corrects) gets a clear, specific error here
+    // instead of a generic server rejection after submitting.
     const isLetterMechanism = data.shippingPreset === "free_envelope" || data.shippingPreset === "tracked_envelope";
-    if (isLetterMechanism && data.format === "fixed" && dollarsToCents(data.price) >= 10000) {
-      setError("Envelope shipping isn't available on listings priced at $100 or more.");
+    const referencePriceCents =
+      data.format === "fixed"
+        ? dollarsToCents(data.price)
+        : Math.max(
+            dollarsToCents(data.startingBid),
+            data.buyItNowEnabled ? dollarsToCents(data.buyItNowPrice) : 0,
+          );
+    if (isLetterMechanism && referencePriceCents >= 10000) {
+      setError("Anything above $100 can't use Tracked Envelope.");
       return;
     }
 
@@ -148,7 +167,11 @@ export default function SellWizard() {
           rarity: data.rarity,
           condition: data.condition,
           isGraded: data.isGraded,
-          gradingCompany: data.isGraded ? data.gradingCompany : "",
+          gradingCompany: !data.isGraded
+            ? ""
+            : data.gradingCompany === OTHER_GRADER
+              ? data.gradingCompanyOther.trim()
+              : data.gradingCompany,
           grade: data.isGraded ? data.grade : "",
           certNumber: data.isGraded ? data.certNumber : "",
           format: data.format,
@@ -162,6 +185,7 @@ export default function SellWizard() {
           allowOffers: data.allowOffers,
           minOfferCents: data.allowOffers && data.minOffer.trim() ? dollarsToCents(data.minOffer) : 0,
           shippingPreset: data.shippingPreset,
+          requestSignature: data.requestSignature,
           imageUrls: data.photos,
         }),
       });
@@ -173,15 +197,17 @@ export default function SellWizard() {
   }
 
   return (
-    <div className="mt-8">
-      <StepBubbles current={step} onStepClick={(target) => target < step && setStep(target)} />
+    <div className="flex flex-col gap-5">
+      <div className="rounded-3xl border border-brand-border bg-white px-5 py-4 shadow-xl shadow-brand-navy/5 sm:px-7 sm:py-5">
+        <StepBubbles current={step} onStepClick={(target) => target < step && setStep(target)} />
+      </div>
 
-      <div className="mt-10 flex flex-col gap-4">
+      <div className="flex flex-col gap-5">
         {step === 1 && <CardSearch update={update} />}
 
         <div
           key={step}
-          className="animate-step-enter rounded-2xl border border-gray-300 bg-white p-6 shadow-sm sm:p-8"
+          className="animate-step-enter rounded-3xl border border-brand-border bg-white p-6 shadow-xl shadow-brand-navy/5 sm:p-9"
         >
           {step === 1 && (
             <Step1Details data={data} update={update} onNext={() => setStep(2)} />

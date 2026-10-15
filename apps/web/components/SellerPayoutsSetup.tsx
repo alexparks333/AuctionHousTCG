@@ -68,7 +68,7 @@ export default function SellerPayoutsSetup({
       {fullyOnboarded ? (
         <div className="flex items-center gap-2 rounded-lg bg-brand-success/10 px-3 py-2 text-sm font-medium text-brand-success">
           <ShieldCheck size={16} />
-          Payouts are set up — you're ready to sell.
+          Payouts are set up — you&apos;re ready to sell.
         </div>
       ) : (
         <>

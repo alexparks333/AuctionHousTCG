@@ -26,7 +26,14 @@ export const REASON_LABELS: Record<ClaimReasonCode, string> = {
   payment_fraud: "I didn't make this purchase",
   buyers_remorse: "Changed my mind",
   transit_damage: "Arrived damaged",
+  not_received_tracking_stalled: "Never arrived — tracking never updated",
 };
+
+// The only reason code filable before delivery (orderState === "shipped")
+// — the other five all assume the item was actually received/inspected,
+// which isn't true yet pre-delivery. FileClaimForm's dropdown is
+// restricted to just this one reason in that case.
+const PRE_DELIVERY_REASONS: ClaimReasonCode[] = ["not_received_tracking_stalled"];
 
 export const STATE_LABELS: Record<string, string> = {
   opened: "Just opened",
@@ -82,6 +89,7 @@ export default function ClaimPanel({
   }
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load of the claim on mount
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listingId]);
@@ -89,16 +97,34 @@ export default function ClaimPanel({
   if (loading) return null;
 
   if (!detail) {
-    if (orderState !== "claim_window" || viewerIsSeller) return notEligibleFallback ?? null;
-    return <FileClaimForm orderId={orderId} onFiled={refresh} />;
+    // "shipped" is only eligible for the one pre-delivery reason code
+    // (not_received_tracking_stalled) — see PRE_DELIVERY_REASONS.
+    const preDelivery = orderState === "shipped";
+    if ((orderState !== "claim_window" && !preDelivery) || viewerIsSeller) {
+      return notEligibleFallback ?? null;
+    }
+    return <FileClaimForm orderId={orderId} onFiled={refresh} preDelivery={preDelivery} />;
   }
 
   return <ClaimThread detail={detail} onChange={refresh} />;
 }
 
-function FileClaimForm({ orderId, onFiled }: { orderId: string; onFiled: () => void }) {
+function FileClaimForm({
+  orderId,
+  onFiled,
+  preDelivery,
+}: {
+  orderId: string;
+  onFiled: () => void;
+  // True while the order is merely "shipped" (not yet claim_window) —
+  // restricts the reason dropdown to just not_received_tracking_stalled,
+  // the only reason honest to file before the item's even been delivered.
+  preDelivery: boolean;
+}) {
   const [open, setOpen] = useState(false);
-  const [reason, setReason] = useState<ClaimReasonCode>("not_as_described");
+  const [reason, setReason] = useState<ClaimReasonCode>(
+    preDelivery ? "not_received_tracking_stalled" : "not_as_described",
+  );
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -137,11 +163,13 @@ function FileClaimForm({ orderId, onFiled }: { orderId: string; onFiled: () => v
         onChange={(e) => setReason(e.target.value as ClaimReasonCode)}
         className="mt-2 w-full rounded-lg border border-brand-border px-3 py-2 text-sm outline-none focus:border-brand-navy"
       >
-        {Object.entries(REASON_LABELS).map(([value, label]) => (
-          <option key={value} value={value}>
-            {label}
-          </option>
-        ))}
+        {Object.entries(REASON_LABELS)
+          .filter(([value]) => !preDelivery || PRE_DELIVERY_REASONS.includes(value as ClaimReasonCode))
+          .map(([value, label]) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ))}
       </select>
       <textarea
         value={body}
@@ -316,7 +344,7 @@ function ClaimThread({
                 }
                 className="whitespace-nowrap rounded-lg border border-brand-border px-3 py-2 text-sm font-medium text-gray-700 hover:bg-brand-surface disabled:opacity-60"
               >
-                Propose "keep it, refund X"
+                Propose &quot;keep it, refund X&quot;
               </button>
             </div>
           )}

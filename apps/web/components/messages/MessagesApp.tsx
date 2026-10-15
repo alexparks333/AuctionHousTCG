@@ -139,6 +139,8 @@ export default function MessagesApp({
     refreshThreads();
   }
 
+  const unreadThreads = threads.filter((t) => t.unread).length;
+
   return (
     // A genuinely fixed height, not min-h-*/flex-1 — this box's own
     // ancestors (AccountLayout's <main>) are sized by min-h-screen, not a
@@ -149,30 +151,48 @@ export default function MessagesApp({
     // entirely: the box always looks like a normal chat window, and both
     // panes (the thread list, and ThreadView's own message list) scroll
     // within it via their own overflow-y-auto.
-    <div className="mt-6 flex h-[600px] overflow-hidden rounded-xl border border-brand-border bg-white">
+    <div className="mt-6 flex h-[620px] overflow-hidden rounded-2xl border border-brand-border bg-white shadow-sm">
       <div
-        className={`w-full shrink-0 overflow-y-auto border-brand-border md:block md:w-80 md:border-r ${
-          selectedId ? "hidden md:block" : "block"
+        className={`w-full shrink-0 flex-col border-brand-border bg-brand-surface/50 md:flex md:w-80 md:border-r ${
+          selectedId ? "hidden md:flex" : "flex"
         }`}
       >
-        {threads.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 py-16 text-center">
-            <MessageSquare size={28} className="text-gray-300" />
-            <p className="text-sm font-medium text-gray-700">No messages yet</p>
-            <p className="text-xs text-gray-500">
-              Tap &ldquo;Message Seller&rdquo; on a listing to start a conversation.
-            </p>
-          </div>
-        ) : (
-          threads.map((thread) => (
-            <ThreadListItem
-              key={thread.id}
-              thread={thread}
-              active={thread.id === selectedId}
-              onSelect={() => selectThread(thread.id)}
-            />
-          ))
-        )}
+        <div className="flex shrink-0 items-center justify-between border-b border-brand-border px-4 py-3.5">
+          <p className="text-sm font-bold text-gray-900">Inbox</p>
+          {unreadThreads > 0 ? (
+            <span className="rounded-full bg-brand-gold px-2 py-0.5 text-[11px] font-bold text-white">
+              {unreadThreads} new
+            </span>
+          ) : (
+            <span className="text-xs text-gray-400">
+              {threads.length} {threads.length === 1 ? "conversation" : "conversations"}
+            </span>
+          )}
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          {threads.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2 px-6 py-16 text-center">
+              <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-gray-400 shadow-sm">
+                <MessageSquare size={20} />
+              </span>
+              <p className="mt-1 text-sm font-semibold text-gray-800">No messages yet</p>
+              <p className="text-xs text-gray-500">
+                Tap &ldquo;Message Seller&rdquo; on a listing to start a conversation.
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1">
+              {threads.map((thread) => (
+                <ThreadListItem
+                  key={thread.id}
+                  thread={thread}
+                  active={thread.id === selectedId}
+                  onSelect={() => selectThread(thread.id)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className={`min-w-0 flex-1 ${selectedId ? "flex" : "hidden md:flex"}`}>
@@ -185,9 +205,11 @@ export default function MessagesApp({
             onOfferResolved={handleOfferResolved}
           />
         ) : (
-          <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-            <MessageSquare size={28} className="text-gray-300" />
-            <p className="text-sm text-gray-500">
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 bg-gradient-to-b from-white to-brand-surface/60 px-6 text-center">
+            <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-navy text-brand-gold-light shadow-md shadow-brand-navy/20">
+              <MessageSquare size={22} />
+            </span>
+            <p className="mt-1 text-sm font-medium text-gray-600">
               {detailLoading
                 ? "Loading conversation..."
                 : threads.length === 0

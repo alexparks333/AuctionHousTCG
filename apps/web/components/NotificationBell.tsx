@@ -3,7 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Bell } from "lucide-react";
+import {
+  ArrowRight,
+  Bell,
+  BellRing,
+  CheckCheck,
+  ChevronRight,
+  PackagePlus,
+} from "lucide-react";
 import {
   getMyNotificationsClient,
   markNotificationRead,
@@ -11,84 +18,17 @@ import {
   type AppNotification,
 } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/format";
-import ListingImage from "@/components/ListingImage";
+import {
+  KIND_META,
+  NotificationThumb,
+  notificationHref,
+} from "@/components/notifications/notificationMeta";
+
+// Thumbnails warmed in the background on page load, so the popup opens with
+// its photos already there (the first resize of a photo is the slow part).
+const WARM_THUMBS = 12;
 
 const POLL_MS = 15000;
-
-// A small corner badge on the listing's own photo reads as "what happened,
-// on the actual card" at a glance — same visual language as
-// CelebrationToast's reveal card and the Won/Sold/Lost badges on
-// Buying/Selling, rather than a generic icon that says nothing about which
-// listing this is.
-const KIND_META: Record<
-  AppNotification["kind"],
-  { badgeColor: string; badgeLabel: string; text: (title: string) => string }
-> = {
-  won: { badgeColor: "bg-brand-success", badgeLabel: "Won", text: (t) => `You won ${t}!` },
-  bought: {
-    badgeColor: "bg-brand-success",
-    badgeLabel: "Bought",
-    text: (t) => `You bought ${t}!`,
-  },
-  sold: {
-    badgeColor: "bg-brand-success",
-    badgeLabel: "Sold",
-    text: (t) => `Your listing sold: ${t}`,
-  },
-  outbid: {
-    badgeColor: "bg-brand-urgent",
-    badgeLabel: "Outbid",
-    text: (t) => `You've been outbid on ${t}`,
-  },
-  seller_review: {
-    badgeColor: "bg-brand-gold",
-    badgeLabel: "Review",
-    text: (t) => `You got a new review on ${t}`,
-  },
-  buyer_review: {
-    badgeColor: "bg-brand-gold",
-    badgeLabel: "Review",
-    text: (t) => `The seller left you a review on ${t}`,
-  },
-  offer_received: {
-    badgeColor: "bg-sky-500",
-    badgeLabel: "Offer",
-    text: (t) => `New offer on ${t}`,
-  },
-  offer_accepted: {
-    badgeColor: "bg-brand-success",
-    badgeLabel: "Accepted",
-    text: (t) => `Your offer on ${t} was accepted!`,
-  },
-  offer_declined: {
-    badgeColor: "bg-gray-400",
-    badgeLabel: "Declined",
-    text: (t) => `Your offer on ${t} was declined`,
-  },
-};
-
-// Where clicking a notification actually goes. won/bought/sold go to
-// /order/{listingId} — app/order/[id]/page.tsx is keyed by LISTING id, not
-// a real orders.id (it calls getListing(id)/getOrderForListing(id, ...)),
-// and degrades gracefully to its own "shipping isn't wired up yet" copy
-// when no real order row exists yet for that listing — so this is safe to
-// route to unconditionally for these three kinds, no join against orders
-// needed. An offer_received always belongs to the listing's own seller,
-// so it goes straight to that listing's own Offers panel (only rendered
-// for the seller, highlighting this one offer among however many others
-// are pending there); offer_accepted/declined always belong to the buyer
-// who sent it, so those go to the buyer's own sent-offers list instead;
-// everything else (outbid: still just an active auction; the review
-// kinds: no order/offer concept fits any better) goes to the plain
-// listing page.
-function notificationHref(n: AppNotification): string {
-  if (n.kind === "won" || n.kind === "bought" || n.kind === "sold") return `/order/${n.listingId}`;
-  if (n.kind === "offer_received" && n.offerId) return `/listing/${n.listingId}?offer=${n.offerId}`;
-  if ((n.kind === "offer_accepted" || n.kind === "offer_declined") && n.offerId) {
-    return `/account/bids-offers?offer=${n.offerId}`;
-  }
-  return `/listing/${n.listingId}`;
-}
 
 // Server-fetched initial state (Header passes these down), then kept
 // current with a plain poll — same reasoning as CelebrationWatcher, just a
@@ -103,6 +43,7 @@ export default function NotificationBell({
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState<"all" | "unread">("all");
   const [notifications, setNotifications] = useState(initialNotifications);
   const [unreadCount, setUnreadCount] = useState(initialUnreadCount);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -137,7 +78,9 @@ export default function NotificationBell({
     if (!n.readAt) {
       setUnreadCount((c) => Math.max(0, c - 1));
       setNotifications((prev) =>
-        prev.map((p) => (p.id === n.id ? { ...p, readAt: new Date().toISOString() } : p))
+        prev.map((p) =>
+          p.id === n.id ? { ...p, readAt: new Date().toISOString() } : p,
+        ),
       );
       markNotificationRead(n.id).catch(() => {});
     }
@@ -146,9 +89,16 @@ export default function NotificationBell({
 
   async function handleMarkAllRead() {
     setUnreadCount(0);
-    setNotifications((prev) => prev.map((p) => ({ ...p, readAt: p.readAt ?? new Date().toISOString() })));
+    setNotifications((prev) =>
+      prev.map((p) => ({ ...p, readAt: p.readAt ?? new Date().toISOString() })),
+    );
     markAllNotificationsRead().catch(() => {});
   }
+
+  const shown =
+    filter === "unread"
+      ? notifications.filter((n) => !n.readAt)
+      : notifications;
 
   return (
     <div className="relative" ref={rootRef}>
@@ -158,88 +108,193 @@ export default function NotificationBell({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="Notifications"
-        className="relative flex items-center rounded-md px-2.5 py-2 text-gray-700 transition-colors hover:bg-brand-surface"
+        className={`relative flex items-center rounded-full p-2.5 transition-colors ${
+          open
+            ? "bg-brand-navy text-brand-gold-light"
+            : "text-gray-700 hover:bg-brand-surface"
+        }`}
       >
         <Bell size={19} />
         {unreadCount > 0 && (
-          <span className="absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand-urgent px-1 text-[10px] font-bold text-white">
+          <span className="absolute -right-0.5 -top-0.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-brand-urgent px-1 text-[10px] font-bold text-white ring-2 ring-white">
             {unreadCount > 9 ? "9+" : unreadCount}
           </span>
         )}
       </button>
 
+      {/* Hidden, eagerly-loaded copies of the popup's thumbnails (same
+          size, so the same cached file) — see WARM_THUMBS. */}
+      <div hidden aria-hidden>
+        {notifications.slice(0, WARM_THUMBS).map((n) => (
+          <NotificationThumb key={n.id} n={n} size="sm" eager />
+        ))}
+      </div>
+
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-full z-50 mt-2 w-80 overflow-hidden rounded-xl border border-brand-border bg-white shadow-lg"
+          className="absolute right-0 top-full z-50 mt-2 w-[min(21rem,calc(100vw-2rem))] origin-top-right animate-step-enter overflow-hidden rounded-2xl border border-brand-border bg-white shadow-2xl shadow-brand-navy/15"
         >
-          <div className="flex items-center justify-between border-b border-brand-border px-4 py-2.5">
-            <p className="text-sm font-semibold text-gray-900">Notifications</p>
-            {unreadCount > 0 && (
-              <button
-                type="button"
-                onClick={handleMarkAllRead}
-                className="text-xs font-medium text-brand-navy hover:underline"
-              >
-                Mark all read
-              </button>
+          {/* Header band */}
+          <div className="relative overflow-hidden bg-gradient-to-br from-brand-navy via-brand-navy-light to-slate-800 px-4 pb-2.5 pt-3 text-white">
+            <div
+              aria-hidden
+              className="absolute -right-10 -top-12 h-28 w-28 rounded-full bg-brand-gold/25 blur-2xl"
+            />
+            <div className="relative flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/10 text-brand-gold-light ring-1 ring-white/15">
+                  <BellRing size={14} />
+                </span>
+                <div>
+                  <p className="text-sm font-bold leading-tight">
+                    Notifications
+                  </p>
+                  <p className="text-[11px] text-white/60">
+                    {unreadCount > 0
+                      ? `${unreadCount} unread`
+                      : "You're all caught up"}
+                  </p>
+                </div>
+              </div>
+              {unreadCount > 0 && (
+                <button
+                  type="button"
+                  onClick={handleMarkAllRead}
+                  className="flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-white ring-1 ring-white/15 transition-colors hover:bg-white/20"
+                >
+                  <CheckCheck size={12} /> Mark all read
+                </button>
+              )}
+            </div>
+            <div className="relative mt-2.5 flex gap-1 text-[11px] font-semibold">
+              {(
+                [
+                  ["all", "All", notifications.length],
+                  ["unread", "Unread", unreadCount],
+                ] as const
+              ).map(([value, label, count]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setFilter(value)}
+                  className={`flex items-center gap-1 rounded-full px-2.5 py-0.5 transition-colors ${
+                    filter === value
+                      ? "bg-white text-brand-navy"
+                      : "text-white/70 hover:text-white"
+                  }`}
+                >
+                  {label}
+                  <span
+                    className={`rounded-full px-1.5 text-[10px] ${
+                      filter === value
+                        ? "bg-brand-navy/10 text-brand-navy"
+                        : "bg-white/10"
+                    }`}
+                  >
+                    {count}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="max-h-[21rem] overflow-y-auto overscroll-contain">
+            {shown.length === 0 ? (
+              <div className="flex flex-col items-center px-6 py-8 text-center">
+                <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-surface text-gray-400">
+                  <Bell size={18} />
+                </span>
+                <p className="mt-2 text-sm font-semibold text-gray-900">
+                  {filter === "unread"
+                    ? "No unread notifications"
+                    : "No notifications yet"}
+                </p>
+              </div>
+            ) : (
+              <ul className="p-1.5">
+                {shown.map((n) => {
+                  const meta = KIND_META[n.kind];
+                  const unread = !n.readAt;
+                  return (
+                    <li key={n.id}>
+                      <Link
+                        href={notificationHref(n)}
+                        role="menuitem"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleOpenNotification(n);
+                        }}
+                        className={`group relative flex items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors ${
+                          unread
+                            ? "bg-amber-50/60 hover:bg-amber-50"
+                            : "hover:bg-brand-surface"
+                        }`}
+                      >
+                        {unread && (
+                          <span
+                            aria-hidden
+                            className="absolute inset-y-2.5 left-0 w-1 rounded-full bg-brand-gold"
+                          />
+                        )}
+                        <NotificationThumb n={n} size="sm" />
+                        <span className="min-w-0 flex-1">
+                          <span
+                            className={`line-clamp-2 text-[13px] leading-snug ${
+                              unread
+                                ? "font-semibold text-gray-900"
+                                : "text-gray-600"
+                            }`}
+                          >
+                            {meta.text(n.listingTitle)}
+                          </span>
+                          <span className="mt-1 flex flex-wrap items-center gap-1 text-[11px]">
+                            <span
+                              className={`rounded-full px-1.5 py-px text-[10px] font-bold ${meta.tint}`}
+                            >
+                              {meta.label}
+                            </span>
+                            {/* The order had singles/other cards added at
+                                    checkout ("Add Singles To Your Order"). */}
+                            {n.isBundle && (
+                              <span className="inline-flex items-center gap-0.5 rounded-full bg-brand-gold px-1.5 py-px text-[10px] font-bold text-white">
+                                <PackagePlus size={9} /> Bundle
+                              </span>
+                            )}
+                            {/* Date.now()-based text — see ThreadListItem's
+                                    matching comment for why this needs
+                                    suppressHydrationWarning. */}
+                            <span
+                              className="text-gray-400"
+                              suppressHydrationWarning
+                            >
+                              {formatRelativeTime(n.createdAt)}
+                            </span>
+                          </span>
+                        </span>
+                        <ChevronRight
+                          size={14}
+                          className="shrink-0 text-gray-300 transition-all group-hover:translate-x-0.5 group-hover:text-gray-500"
+                        />
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
             )}
           </div>
 
-          <div className="max-h-96 overflow-y-auto">
-            {notifications.length === 0 ? (
-              <p className="px-4 py-6 text-center text-sm text-gray-500">No notifications yet.</p>
-            ) : (
-              notifications.map((n) => {
-                const meta = KIND_META[n.kind];
-                return (
-                  <Link
-                    key={n.id}
-                    href={notificationHref(n)}
-                    role="menuitem"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      handleOpenNotification(n);
-                    }}
-                    className={`flex items-start gap-2.5 border-b border-brand-border px-4 py-3 text-sm last:border-0 hover:bg-brand-surface ${
-                      n.readAt ? "" : "bg-brand-navy/[0.03]"
-                    }`}
-                  >
-                    <div className="relative aspect-[5/7] w-9 shrink-0">
-                      {/* The badge sits in this outer, non-clipping wrapper
-                          and the photo/placeholder in its own
-                          overflow-hidden inner one — the badge is meant to
-                          overlap the card's rounded corner, so it can't
-                          share a box that clips to that same rounding or
-                          the corner poking out gets cut off. */}
-                      <div className="h-full w-full overflow-hidden rounded-lg">
-                        <ListingImage src={n.listingImageUrl} game={n.listingGame} label={n.listingTitle} />
-                      </div>
-                      <span
-                        className={`absolute -right-1 -top-1 rounded-full px-1 py-0.5 text-[8px] font-bold leading-none text-white shadow ${meta.badgeColor}`}
-                      >
-                        {meta.badgeLabel}
-                      </span>
-                    </div>
-                    <span className="min-w-0 flex-1">
-                      <span className={`block ${n.readAt ? "text-gray-600" : "font-semibold text-gray-900"}`}>
-                        {meta.text(n.listingTitle)}
-                      </span>
-                      {/* Date.now()-based text — see ThreadListItem's
-                          matching comment for why this needs
-                          suppressHydrationWarning, not a fix elsewhere. */}
-                      <span className="mt-0.5 block text-xs text-gray-400" suppressHydrationWarning>
-                        {formatRelativeTime(n.createdAt)}
-                      </span>
-                    </span>
-                    {!n.readAt && (
-                      <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-brand-navy" />
-                    )}
-                  </Link>
-                );
-              })
-            )}
-          </div>
+          <Link
+            href="/account/notifications"
+            onClick={() => setOpen(false)}
+            className="group flex items-center justify-center gap-1 border-t border-brand-border px-4 py-2 text-[11px] font-semibold text-brand-navy transition-colors hover:bg-brand-surface"
+          >
+            See all notifications
+            <ArrowRight
+              size={12}
+              className="transition-transform group-hover:translate-x-0.5"
+            />
+          </Link>
         </div>
       )}
     </div>
