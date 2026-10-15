@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,7 +89,12 @@ import (
 type PitneyBowesClient struct {
 	clientID     string
 	clientSecret string
-	hc           *http.Client
+	// host is the API's scheme+host — the sandbox by default
+	// (PitneyBowesSandboxHost), the production host once live keys are in
+	// use (PITNEY_BOWES_API_HOST). Both the shipping API and the token
+	// endpoint live on it.
+	host string
+	hc   *http.Client
 
 	mu          sync.Mutex
 	token       string
@@ -98,15 +104,29 @@ type PitneyBowesClient struct {
 	uspsCarrierAccount string
 }
 
-const pitneyBowesSandboxBaseURL = "https://api-sandbox.sendpro360.pitneybowes.com/shipping/api"
+// PitneyBowesSandboxHost is the default API host — Pitney Bowes' test
+// environment, where labels cost no real postage. Set PITNEY_BOWES_API_HOST
+// to the production host Pitney Bowes gives you when switching to live
+// credentials; sandbox credentials don't work against production or vice
+// versa.
+const PitneyBowesSandboxHost = "https://api-sandbox.sendpro360.pitneybowes.com"
 
-func NewPitneyBowesClient(clientID, clientSecret string) *PitneyBowesClient {
+const (
+	pitneyBowesShippingPath = "/shipping/api"
+	pitneyBowesTokenPath    = "/auth/api/v1/token"
+)
+
+func NewPitneyBowesClient(clientID, clientSecret, host string) *PitneyBowesClient {
 	if clientID == "" || clientSecret == "" {
 		return nil
+	}
+	if host == "" {
+		host = PitneyBowesSandboxHost
 	}
 	return &PitneyBowesClient{
 		clientID:     clientID,
 		clientSecret: clientSecret,
+		host:         strings.TrimRight(host, "/"),
 		hc:           &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -115,14 +135,19 @@ func (c *PitneyBowesClient) IsConfigured() bool {
 	return c != nil
 }
 
+// IsSandbox reports whether labels are being bought in Pitney Bowes' test
+// environment (no real postage).
+func (c *PitneyBowesClient) IsSandbox() bool {
+	return c != nil && c.host == PitneyBowesSandboxHost
+}
+
 // accessToken returns a cached OAuth2 client-credentials bearer token,
 // refreshing it once it's within a minute of expiring. Confirmed live:
 // this is Basic auth (Client ID as username, Secret as password) plus a
 // plain `{"grant_type":"client_credentials"}` JSON body — NOT the
 // form-urlencoded body an earlier, pre-sandbox guess used — and the token
-// lives on its own host+path, entirely separate from
-// pitneyBowesSandboxBaseURL.
-const pitneyBowesAuthURL = "https://api-sandbox.sendpro360.pitneybowes.com/auth/api/v1/token"
+// lives on its own path (pitneyBowesTokenPath), separate from the shipping
+// API's.
 
 func (c *PitneyBowesClient) accessToken(ctx context.Context) (string, error) {
 	c.mu.Lock()
@@ -132,7 +157,7 @@ func (c *PitneyBowesClient) accessToken(ctx context.Context) (string, error) {
 		return c.token, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, pitneyBowesAuthURL, bytes.NewBufferString(`{"grant_type":"client_credentials"}`))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.host+pitneyBowesTokenPath, bytes.NewBufferString(`{"grant_type":"client_credentials"}`))
 	if err != nil {
 		return "", fmt.Errorf("build pitney bowes auth request: %w", err)
 	}
@@ -465,7 +490,7 @@ func (c *PitneyBowesClient) authenticatedDo(ctx context.Context, method, path st
 		if bodyBytes != nil {
 			reader = bytes.NewReader(bodyBytes)
 		}
-		req, err := http.NewRequestWithContext(ctx, method, pitneyBowesSandboxBaseURL+path, reader)
+		req, err := http.NewRequestWithContext(ctx, method, c.host+pitneyBowesShippingPath+path, reader)
 		if err != nil {
 			return fmt.Errorf("build request: %w", err)
 		}

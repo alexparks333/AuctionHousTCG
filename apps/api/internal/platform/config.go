@@ -100,6 +100,10 @@ type Config struct {
 	// here.
 	PitneyBowesClientID     string
 	PitneyBowesClientSecret string
+	// PitneyBowesAPIHost is the Pitney Bowes API host. Empty means the
+	// sandbox (internal/shipping.PitneyBowesSandboxHost); set it to the
+	// production host when switching to live credentials.
+	PitneyBowesAPIHost string
 	// ResendAPIKey powers internal/mail — the one real email this repo
 	// sends: alerting support when a claim reaches human_review
 	// (internal/dispute.Escalate). Empty means that alert is silently
@@ -174,6 +178,7 @@ func LoadConfig() (Config, error) {
 		ShippoAPIToken:             getEnv("SHIPPO_API_TOKEN", ""),
 		PitneyBowesClientID:        getEnv("PITNEY_BOWES_CLIENT_ID", ""),
 		PitneyBowesClientSecret:    getEnv("PITNEY_BOWES_CLIENT_SECRET", ""),
+		PitneyBowesAPIHost:         getEnv("PITNEY_BOWES_API_HOST", ""),
 		ResendAPIKey:               getEnv("RESEND_API_KEY", ""),
 		ClaimsNotifyFrom:           getEnv("CLAIMS_NOTIFY_FROM_EMAIL", "AuctionHous Claims <claims@auctionhous.net>"),
 		ClaimsNotifyTo:             getEnv("CLAIMS_NOTIFY_TO_EMAIL", "support@auctionhous.net"),

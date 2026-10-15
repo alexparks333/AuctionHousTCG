@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
@@ -149,9 +150,26 @@ func main() {
 		mux.HandleFunc("GET /users/{username}/buyer-stats", buyerreview.HandleStatsForUser(pool))
 
 		shippingClient := shipping.NewClient(cfg.ShippoAPIToken)
-		pbClient := shipping.NewPitneyBowesClient(cfg.PitneyBowesClientID, cfg.PitneyBowesClientSecret)
+		pbClient := shipping.NewPitneyBowesClient(cfg.PitneyBowesClientID, cfg.PitneyBowesClientSecret, cfg.PitneyBowesAPIHost)
 		if !pbClient.IsConfigured() {
 			log.Println("PITNEY_BOWES_CLIENT_ID/SECRET not set — tracked-envelope label purchase disabled (see apps/api/.env.example)")
+		} else if pbClient.IsSandbox() {
+			log.Println("Pitney Bowes: SANDBOX — envelope labels are test labels, no real postage")
+			if !devMode {
+				log.Println("WARNING: APP_ENV is production but Pitney Bowes is still on the sandbox host — set PITNEY_BOWES_API_HOST and live credentials")
+			}
+		} else {
+			log.Println("Pitney Bowes: LIVE — envelope labels cost real postage")
+		}
+		if shippingClient.IsConfigured() {
+			if strings.HasPrefix(cfg.ShippoAPIToken, "shippo_test_") {
+				log.Println("Shippo: TEST token — package labels are test labels, no real postage")
+				if !devMode {
+					log.Println("WARNING: APP_ENV is production but SHIPPO_API_TOKEN is a test token")
+				}
+			} else {
+				log.Println("Shippo: LIVE token — package labels cost real postage")
+			}
 		}
 		mux.Handle("POST /shipping/verify-address", verifier.RequireAuth(shipping.HandleVerifyAddress(pbClient)))
 		mux.Handle("POST /listings", verifier.RequireAuth(agreement.RequireSeller(pool, listing.HandleCreate(pool, shippingClient))))
@@ -192,6 +210,14 @@ func main() {
 		if !paymentClient.IsConfigured() {
 			log.Println("STRIPE_SECRET_KEY not set — Buy It Now falls back to its no-payment mock path (see apps/api/.env.example)")
 		} else {
+			if strings.HasPrefix(cfg.StripeSecretKey, "sk_test_") || strings.HasPrefix(cfg.StripeSecretKey, "rk_test_") {
+				log.Println("Stripe: TEST mode — no real money moves")
+				if !devMode {
+					log.Println("WARNING: APP_ENV is production but STRIPE_SECRET_KEY is a test key")
+				}
+			} else {
+				log.Println("Stripe: LIVE mode — real payments")
+			}
 			mux.Handle("POST /listings/{id}/checkout-intent", verifier.RequireAuth(auction.HandleCreateCheckoutIntent(pool, paymentClient, shippingClient)))
 			mux.Handle("GET /me/payment-methods", verifier.RequireAuth(paymentmethod.HandleList(pool, paymentClient)))
 			mux.Handle("POST /me/payment-methods/setup-intent", verifier.RequireAuth(paymentmethod.HandleCreateSetupIntent(pool, paymentClient)))
