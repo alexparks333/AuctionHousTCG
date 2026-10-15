@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
@@ -60,6 +61,7 @@ func main() {
 	// (unset, "production", a typo) leaves them off.
 	devMode := cfg.Environment == "development"
 	log.Printf("APP_ENV=%s — dev-only tools %s", cfg.Environment, map[bool]string{true: "ENABLED", false: "disabled"}[devMode])
+	limits := newRateLimits()
 	listing.AllowDevDurations = devMode
 	listing.AllowMissingPhotos = devMode
 	seller.AllowDevTierAdjust = devMode
@@ -136,8 +138,8 @@ func main() {
 		}
 		placesClient := address.NewAutocompleteClient(cfg.GooglePlacesAPIKey)
 		if placesClient.IsConfigured() {
-			mux.Handle("GET /address/autocomplete", verifier.RequireAuth(address.HandleAutocomplete(placesClient)))
-			mux.Handle("GET /address/autocomplete/resolve", verifier.RequireAuth(address.HandleAutocompleteResolve(placesClient)))
+			mux.Handle("GET /address/autocomplete", verifier.RequireAuth(limits.addressSuggest.Wrap(address.HandleAutocomplete(placesClient))))
+			mux.Handle("GET /address/autocomplete/resolve", verifier.RequireAuth(limits.addressResolve.Wrap(address.HandleAutocompleteResolve(placesClient))))
 		} else {
 			log.Println("GOOGLE_PLACES_API_KEY not set — address autocomplete disabled (see apps/api/.env.example)")
 		}
@@ -171,7 +173,7 @@ func main() {
 				log.Println("Shippo: LIVE token — package labels cost real postage")
 			}
 		}
-		mux.Handle("POST /shipping/verify-address", verifier.RequireAuth(shipping.HandleVerifyAddress(pbClient)))
+		mux.Handle("POST /shipping/verify-address", verifier.RequireAuth(limits.addressVerify.Wrap(shipping.HandleVerifyAddress(pbClient))))
 		mux.Handle("POST /listings", verifier.RequireAuth(agreement.RequireSeller(pool, listing.HandleCreate(pool, shippingClient))))
 		mux.HandleFunc("GET /listings", listing.HandleList(pool))
 		mux.HandleFunc("GET /listings/counts", listing.HandleCounts(pool))
@@ -203,8 +205,8 @@ func main() {
 			// alert. `to` is unused (empty) since every call goes through
 			// SendTo's per-call recipient, never Client's own fixed `to`.
 			accountMailClient := mail.NewClient(cfg.ResendAPIKey, cfg.AccountEmailFrom, "")
-			mux.Handle("POST /me/email/start-verify", verifier.RequireAuth(emailverify.HandleStartVerify(pool, accountMailClient)))
-			mux.Handle("POST /me/email/check-verify", verifier.RequireAuth(emailverify.HandleCheckVerify(pool)))
+			mux.Handle("POST /me/email/start-verify", verifier.RequireAuth(limits.emailSend.Wrap(emailverify.HandleStartVerify(pool, accountMailClient))))
+			mux.Handle("POST /me/email/check-verify", verifier.RequireAuth(limits.codeCheck.Wrap(emailverify.HandleCheckVerify(pool))))
 		}
 		listing.RequireSellerOnboarded = paymentClient.IsConfigured()
 		if !paymentClient.IsConfigured() {
@@ -218,7 +220,7 @@ func main() {
 			} else {
 				log.Println("Stripe: LIVE mode — real payments")
 			}
-			mux.Handle("POST /listings/{id}/checkout-intent", verifier.RequireAuth(auction.HandleCreateCheckoutIntent(pool, paymentClient, shippingClient)))
+			mux.Handle("POST /listings/{id}/checkout-intent", verifier.RequireAuth(limits.checkoutIntent.Wrap(auction.HandleCreateCheckoutIntent(pool, paymentClient, shippingClient))))
 			mux.Handle("GET /me/payment-methods", verifier.RequireAuth(paymentmethod.HandleList(pool, paymentClient)))
 			mux.Handle("POST /me/payment-methods/setup-intent", verifier.RequireAuth(paymentmethod.HandleCreateSetupIntent(pool, paymentClient)))
 			mux.Handle("POST /me/payment-methods/{id}/default", verifier.RequireAuth(paymentmethod.HandleSetDefault(pool, paymentClient)))
@@ -270,7 +272,7 @@ func main() {
 				// e.g. Shippo-only orders work even before Pitney Bowes
 				// credentials exist, matching this codebase's usual
 				// per-integration graceful degradation.
-				mux.Handle("POST /listings/{id}/order/shipping-label", verifier.RequireAuth(shipping.HandleBuyLabel(pool, shippingClient, pbClient)))
+				mux.Handle("POST /listings/{id}/order/shipping-label", verifier.RequireAuth(limits.labelBuy.Wrap(shipping.HandleBuyLabel(pool, shippingClient, pbClient))))
 				mux.Handle("GET /listings/{id}/order/shipping-label/download", verifier.RequireAuth(shipping.HandleDownloadLabel(pool)))
 			}
 			if shippingClient.IsConfigured() {
@@ -306,15 +308,15 @@ func main() {
 			// chargeback-fraud ban system) — reuses the same paymentClient
 			// every other Stripe-backed route above does, so this is gated
 			// on Stripe being configured at all, not a separate flag.
-			mux.Handle("POST /me/identity/start-verify", verifier.RequireAuth(identity.HandleStart(pool, paymentClient)))
+			mux.Handle("POST /me/identity/start-verify", verifier.RequireAuth(limits.identityStart.Wrap(identity.HandleStart(pool, paymentClient))))
 		}
 
 		if cfg.TwilioAccountSID == "" || cfg.TwilioAuthToken == "" || cfg.TwilioVerifyServiceSID == "" {
 			log.Println("TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_VERIFY_SERVICE_SID not set — phone verification (KYC level 1) disabled (see apps/api/.env.example)")
 		} else {
 			phoneClient := phoneverify.NewClient(cfg.TwilioAccountSID, cfg.TwilioAuthToken, cfg.TwilioVerifyServiceSID)
-			mux.Handle("POST /me/phone/start-verify", verifier.RequireAuth(phoneverify.HandleStartVerify(pool, phoneClient)))
-			mux.Handle("POST /me/phone/check-verify", verifier.RequireAuth(phoneverify.HandleCheckVerify(pool, phoneClient)))
+			mux.Handle("POST /me/phone/start-verify", verifier.RequireAuth(limits.smsSend.Wrap(phoneverify.HandleStartVerify(pool, phoneClient))))
+			mux.Handle("POST /me/phone/check-verify", verifier.RequireAuth(limits.codeCheck.Wrap(phoneverify.HandleCheckVerify(pool, phoneClient))))
 			// Only enforce the KYC purchase-cap ladder (internal/auction's
 			// bid/buy paths) once level 1 is actually reachable at all —
 			// level 1 requires BOTH phone (this block, already confirmed
@@ -410,4 +412,46 @@ func main() {
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// rateLimits are the per-account limits on endpoints that cost money per
+// call or guard a short verification code (internal/platform/ratelimit.go).
+// The numbers are generous for a real person and cheap to hit for a script.
+type rateLimits struct {
+	smsSend, emailSend, codeCheck, identityStart  *platform.RateLimiter
+	addressSuggest, addressResolve, addressVerify *platform.RateLimiter
+	checkoutIntent, labelBuy                      *platform.RateLimiter
+}
+
+func newRateLimits() rateLimits {
+	hour, day := time.Hour, 24*time.Hour
+	return rateLimits{
+		// Twilio bills every text. The global ceiling caps the bill even if
+		// someone spreads texts across many accounts ("SMS pumping").
+		smsSend: platform.NewRateLimiter("sms-send",
+			[]platform.RateRule{{Max: 5, Window: hour}, {Max: 10, Window: day}},
+			platform.RateRule{Max: 200, Window: hour}),
+		emailSend: platform.NewRateLimiter("email-send",
+			[]platform.RateRule{{Max: 5, Window: hour}, {Max: 10, Window: day}}),
+		// Shared by phone and email code checks: stops guessing a 6-digit
+		// code by brute force.
+		codeCheck: platform.NewRateLimiter("code-check",
+			[]platform.RateRule{{Max: 10, Window: hour}, {Max: 30, Window: day}}),
+		// Stripe charges per identity verification.
+		identityStart: platform.NewRateLimiter("identity-start",
+			[]platform.RateRule{{Max: 3, Window: day}}),
+		// Google Places bills autocomplete and place-details calls. One
+		// typed address is ~5-10 suggestion calls (debounced, 4+ chars).
+		addressSuggest: platform.NewRateLimiter("address-suggest",
+			[]platform.RateRule{{Max: 60, Window: time.Minute}, {Max: 400, Window: day}}),
+		addressResolve: platform.NewRateLimiter("address-resolve",
+			[]platform.RateRule{{Max: 20, Window: hour}, {Max: 60, Window: day}}),
+		addressVerify: platform.NewRateLimiter("address-verify",
+			[]platform.RateRule{{Max: 20, Window: hour}, {Max: 60, Window: day}}),
+		// Each checkout intent can fetch a live Shippo rate quote.
+		checkoutIntent: platform.NewRateLimiter("checkout-intent",
+			[]platform.RateRule{{Max: 60, Window: hour}}),
+		labelBuy: platform.NewRateLimiter("label-buy",
+			[]platform.RateRule{{Max: 10, Window: hour}, {Max: 40, Window: day}}),
+	}
 }

@@ -397,6 +397,14 @@ How the pieces fit together:
   reset, point the Go API at a self-rolled auth flow), not a rewrite of the rest of the
   marketplace.
 
+**Endpoints that cost money per call are rate-limited per account** (`internal/platform/ratelimit.go`,
+limits in `cmd/api/main.go`'s `newRateLimits`): SMS and email code sends, code checks (also stops
+brute-forcing a 6-digit code), Stripe Identity starts, Google Places autocomplete/resolve, address
+verification, checkout intents and label purchases. SMS also has a site-wide hourly ceiling against
+"SMS pumping". Over a limit → 429 with a readable "Too many attempts…" message the forms show as-is.
+In-memory per process — fine for one API instance; move to Redis/Postgres if it's ever scaled out.
+Any new endpoint that calls a paid API should get a limiter too.
+
 **Legal agreements are recorded and enforced** (`internal/agreement`, `agreement_acceptances`,
 migration 0065). Documents: Terms of Service (`/terms`, incorporates `/privacy`) and Seller Agreement
 (`/seller-terms`). Versions live in `agreement.TermsVersion`/`SellerVersion` **and**
