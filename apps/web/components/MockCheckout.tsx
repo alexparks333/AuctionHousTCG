@@ -22,7 +22,13 @@ import { AddBankForm } from "@/components/SavedBanksManager";
 import ShippingAddressGate from "@/components/ShippingAddressGate";
 import { getStripe, isStripeConfigured } from "@/lib/stripe";
 import { emitAddonsUnavailable } from "@/lib/checkoutEvents";
-import { ENVELOPE_MAX_CARDS, formatPrice, type ShippingPreset } from "@/lib/types";
+import {
+  ENVELOPE_MAX_CARDS,
+  MIN_SINGLES_ORDER_CENTS,
+  SINGLES_ENVELOPE_MAX_CARDS,
+  formatPrice,
+  type ShippingPreset,
+} from "@/lib/types";
 
 // Envelope for the two letter-mechanism presets (internal/shipping's own
 // Mechanism split, CLAUDE.md §6.18), a box for everything that actually
@@ -56,8 +62,17 @@ export default function MockCheckout({
   addonsPreviewCents = 0,
   addedCards = 0,
   addonsVersion = 0,
+  singlesOnly = false,
+  backHref,
+  backLabel = "Back to listing",
 }: {
   listingId: string;
+  // A singles-only order (CheckoutBundle's singlesOnly): no card of its
+  // own, every card is an add-on, and it can't be paid for until the
+  // singles reach MIN_SINGLES_ORDER_CENTS.
+  singlesOnly?: boolean;
+  backHref?: string;
+  backLabel?: string;
   priceCents: number;
   // "Add Singles To Your Order" (CheckoutBundle/AddSinglesBar): the
   // selected add-ons, sent with every checkout-intent request so the server
@@ -83,12 +98,15 @@ export default function MockCheckout({
   shippingMethod: string;
   shippingCostLabel: string;
 }) {
-  const totalCards = 1 + addedCards;
-  // A bundle past ENVELOPE_MAX_CARDS ships as a tracked package
-  // (apps/api/internal/shipping.UpgradeForItemCount) — previewed here before
-  // the intent's own shippingPreset confirms it.
-  const previewUpgradesToPackage =
-    totalCards > ENVELOPE_MAX_CARDS && SHIPPING_METHOD_ICONS[shippingPreset] === Mail;
+  const totalCards = singlesOnly ? addedCards : 1 + addedCards;
+  // A bundle past ENVELOPE_MAX_CARDS (SINGLES_ENVELOPE_MAX_CARDS for a
+  // singles-only order) ships as a tracked package (apps/api/internal/
+  // shipping.UpgradeForItemCount / SinglesOrderPreset) — previewed here
+  // before the intent's own shippingPreset confirms it.
+  const envelopeMax = singlesOnly ? SINGLES_ENVELOPE_MAX_CARDS : ENVELOPE_MAX_CARDS;
+  const previewUpgradesToPackage = totalCards > envelopeMax && SHIPPING_METHOD_ICONS[shippingPreset] === Mail;
+  const singlesShortCents = singlesOnly ? Math.max(0, MIN_SINGLES_ORDER_CENTS - addonsPreviewCents) : 0;
+  const href = backHref ?? `/listing/${listingId}`;
 
   // One breakdown block, not two. Originally "Item price"/"Shipping" lived
   // here as a preview, and a second, separate Subtotal/Shipping/Tax/Order
@@ -139,10 +157,10 @@ export default function MockCheckout({
           sight, so the buyer would land here with no visible way back.
           Repeating the link inside the sticky card itself fixes that. */}
       <Link
-        href={`/listing/${listingId}`}
+        href={href}
         className="mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-gray-500 hover:text-brand-navy"
       >
-        <ArrowLeft size={15} /> Back to listing
+        <ArrowLeft size={15} /> {backLabel}
       </Link>
       <h1 className="text-xl font-bold text-gray-900">Complete your purchase</h1>
       {/* "Item price" before a real checkout intent exists (the only number
@@ -153,20 +171,31 @@ export default function MockCheckout({
           bug: a buyer saw "Total $66.66" up top and "Pay $68.22" at the
           bottom with no visible reconciliation — the gap was real shipping
           cost, not a hidden fee, but nothing on the page said so. */}
-      <div className="mt-3 flex items-center justify-between border-t border-brand-border pt-3 text-sm">
-        <span className="text-gray-500">
-          {addons.length > 0 ? "Your card" : displayIntent ? "Subtotal" : "Item price"}
-        </span>
-        <span className="text-lg font-bold text-gray-900">
-          {formatPrice(
-            addons.length > 0 ? priceCents : displayIntent ? displayIntent.subtotalCents : priceCents,
-          )}
-        </span>
-      </div>
+      {singlesOnly ? (
+        <div className="mt-3 flex items-center justify-between border-t border-brand-border pt-3 text-sm">
+          <span className="text-gray-500">
+            Singles ({addedCards} {addedCards === 1 ? "card" : "cards"})
+          </span>
+          <span className="text-lg font-bold text-gray-900">
+            {formatPrice(intent ? intent.addonsCents : addonsPreviewCents)}
+          </span>
+        </div>
+      ) : (
+        <div className="mt-3 flex items-center justify-between border-t border-brand-border pt-3 text-sm">
+          <span className="text-gray-500">
+            {addons.length > 0 ? "Your card" : displayIntent ? "Subtotal" : "Item price"}
+          </span>
+          <span className="text-lg font-bold text-gray-900">
+            {formatPrice(
+              addons.length > 0 ? priceCents : displayIntent ? displayIntent.subtotalCents : priceCents,
+            )}
+          </span>
+        </div>
+      )}
       {/* Add-ons from "Add Singles To Your Order" — the server's own
           addonsCents once an up-to-date intent exists, the local preview
           while one is being fetched. */}
-      {addons.length > 0 && (
+      {addons.length > 0 && !singlesOnly && (
         <div className="mt-1.5 flex items-center justify-between text-sm">
           <span className="text-gray-500">
             Added singles ({addedCards} {addedCards === 1 ? "card" : "cards"})
@@ -204,7 +233,9 @@ export default function MockCheckout({
       </div>
       {shippingUpgraded && (
         <p className="mt-1 text-xs text-gray-400">
-          Orders over {ENVELOPE_MAX_CARDS} cards ship as a tracked package instead of an envelope.
+          {singlesOnly
+            ? `Over ${SINGLES_ENVELOPE_MAX_CARDS} singles ship as a tracked package (bubble mailer or box) instead of an envelope.`
+            : `Orders over ${ENVELOPE_MAX_CARDS} cards ship as a tracked package instead of an envelope.`}
         </p>
       )}
 
@@ -234,6 +265,11 @@ export default function MockCheckout({
         </div>
       </div>
 
+      {singlesOnly && !isStripeConfigured() ? (
+        <p className="mt-6 text-sm text-gray-500">Singles-only orders need online payment, which isn&apos;t set up here.</p>
+      ) : singlesOnly && singlesShortCents > 0 ? (
+        <SinglesMinimumNotice addedCents={addonsPreviewCents} shortCents={singlesShortCents} />
+      ) : (
       <ShippingAddressGate>
         {isStripeConfigured() ? (
           <StripeCheckout
@@ -246,6 +282,27 @@ export default function MockCheckout({
           <PlainMockCheckout listingId={listingId} />
         )}
       </ShippingAddressGate>
+      )}
+    </div>
+  );
+}
+
+// A singles-only order under MIN_SINGLES_ORDER_CENTS — shown in place of
+// the address/payment steps, so no PaymentIntent is created until the cart
+// qualifies (the server refuses one anyway: singles_order.go's
+// checkSinglesCart).
+function SinglesMinimumNotice({ addedCents, shortCents }: { addedCents: number; shortCents: number }) {
+  const progress = Math.min(100, (addedCents / MIN_SINGLES_ORDER_CENTS) * 100);
+  return (
+    <div className="mt-5 rounded-lg border border-brand-gold/40 bg-amber-50/60 p-4">
+      <p className="text-sm font-semibold text-gray-900">Add {formatPrice(shortCents)} more to check out</p>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-gray-200">
+        <div className="h-full rounded-full bg-brand-gold transition-[width] duration-300" style={{ width: `${progress}%` }} />
+      </div>
+      <p className="mt-2 text-xs text-gray-600">
+        Singles bought on their own have a {formatPrice(MIN_SINGLES_ORDER_CENTS)} minimum. Buying a card from this seller?
+        Add singles at that checkout instead — no minimum.
+      </p>
     </div>
   );
 }

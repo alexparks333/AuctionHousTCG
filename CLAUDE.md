@@ -402,8 +402,20 @@ limits in `cmd/api/main.go`'s `newRateLimits`): SMS and email code sends, code c
 brute-forcing a 6-digit code), Stripe Identity starts, Google Places autocomplete/resolve, address
 verification, checkout intents and label purchases. SMS also has a site-wide hourly ceiling against
 "SMS pumping". Over a limit → 429 with a readable "Too many attempts…" message the forms show as-is.
-In-memory per process — fine for one API instance; move to Redis/Postgres if it's ever scaled out.
-Any new endpoint that calls a paid API should get a limiter too.
+**Spammable writes get generous per-account caps too** (free to us, but a script or stolen login
+could flood people): bids, offers, new conversations and messages, listing creation,
+reviews (15/hour), claim opens, and claim activity (messages, evidence, and escalation, which emails
+support). The caps are well above a real person's pace (bids: 100 per 30 minutes, for a bidding war near
+close). Stocking singles is deliberately unlimited (product decision).
+`GET /catalog/search` is public, so it can't be limited per account — it refuses queries over 100 bytes
+instead, and its Firestore reads are cached (at most one re-read per 2 minutes), so traffic doesn't
+cost money. **Sign-ups never touch this API** (the browser calls Supabase Auth directly), so they're
+limited by Supabase's own Auth rate limits and CAPTCHA setting in the dashboard, not here.
+In-memory per process — fine for one API instance; move to Redis/Postgres if it's ever scaled out
+(Redis is in the stack but unused on purpose until then). Flooding from many IPs is an edge concern
+(the host's WAF / Cloudflare), not something these per-account limits address.
+Any new endpoint that calls a paid API, or that lets one account create content others see, should
+get a limiter too.
 
 **Legal agreements are recorded and enforced** (`internal/agreement`, `agreement_acceptances`,
 migration 0065). Documents: Terms of Service (`/terms`, incorporates `/privacy`) and Seller Agreement
@@ -1087,24 +1099,47 @@ seller in one order/shipment**, instead of one card per transaction. Built Riftb
   `/account/buy-history`/`/account/sold-history` redirect there), 10 rows per page (`HistoryPager`, `?page=N`). Cancellations
   (worker unpaid/unshipped timers, ACH failure webhook, banned-fingerprint refund) call
   `order.ReleaseAddons`, which restocks singles and voids the rows.
+- **Singles-only orders** (`internal/auction/singles_order.go`, migration `0067`) — a buyer can buy a
+  seller's singles on their own, with **no listed card, if the singles total at least $2.50**
+  (`MinSinglesOrderCents` / `MIN_SINGLES_ORDER_CENTS`, product decision; singles added to a card's
+  checkout have no minimum). Because every order surface is keyed on one primary listing, the
+  purchase gets a hidden **container listing** (`listings.singles_order`, format `fixed`, status `ended`,
+  $0, never in browse/search/profiles — `ListActive` excludes it, `/listing/{id}` 404s or redirects to the
+  order) and its singles are ordinary `order_addons` rows, so after payment it is a normal order:
+  Transactions, History, order page, labels, tracking, claims, reviews, and worker timers are unchanged.
+  Flow: the profile's Singles Shop dialog is a cart (`SinglesCartFooter`) → `POST
+  /users/{username}/singles-order` opens or reuses the buyer's container for that seller
+  (`reserved_buyer_id`; one open container per buyer+seller, unique index) → `/checkout/{id}`
+  (`CheckoutBundle singlesOnly`: editable cart on the left, minimum gate in `MockCheckout`) → the usual
+  checkout intent and buy-now, which enforce the minimum server-side (`checkSinglesCart`) and mark the
+  container bought (`paySinglesOrder`, compare-and-swap on `buyer_id`). `buyer_id` stays null until
+  payment so nothing fires for an abandoned cart. **Shipping is never the seller's choice:** up to 20
+  cards (`shipping.SinglesEnvelopeMaxCards`) is a tracked envelope, more is a tracked package
+  (`SinglesOrderPreset`, live Shippo quote), then the usual value rule. Card payment only — the
+  no-Stripe mock path can't carry add-ons.
 - **Shipping upgrades by card count** — `shipping.UpgradeForItemCount`: past `EnvelopeMaxCards`
   (10, mirrored as `ENVELOPE_MAX_CARDS`) a letter-mechanism order becomes
   `shippo_ground_advantage` with a live quote, **even from `free_envelope`** — explicit product
   decision: the seller's free shipping covered their one listed card, not a big bundle the buyer
   chose to add, so the buyer pays the package rate. Applied identically at intent time and at
-  order creation.
+  order creation (`auction.resolveOrderShipping`, shared by both). Singles-only orders use their own,
+  higher limit instead — 20 cards (`SinglesEnvelopeMaxCards` / `SINGLES_ENVELOPE_MAX_CARDS`), see above.
 - **Seller profile pages are fixed, not customizable** (explicit product decision): header
   (`ProfileHeader` — avatar, member since, seller/buyer ratings, bio, message button), their
-  listings, then their Singles Shop (a preview of their 5 priciest in-stock cards plus
-  "Open Their Singles Shop", which opens `SinglesBrowser` browse-only — no `onChange`), then
+  listings, then their Singles Shop (`SinglesShopShowcase`: a preview of their 5 priciest in-stock
+  cards plus "Shop Their Singles", which opens `SinglesBrowser` as a cart with `SinglesCartFooter` for
+  a singles-only order — browse-only, no `onChange`, when the owner views their own), then
   reviews (`ProfileReviews`: a Seller Reviews / Buyer Reviews toggle — `#reviews` / `#buyer-reviews`, linked
   from the header's rating tiles; every rating feeds the star summary, only reviews with a comment are
   listed, each with its date; buyer reviews come from `GET /users/{u}/buyer-stats`' `reviews`). The
   old paint/sticker/widget canvas was removed front to
   back (components, `/me/stickers|canvas|widgets` routes, `user.Set*`); the `profile_stickers`/
   `profile_widgets`/`profile_canvas` columns and `profile-canvas` bucket are left in place, unused.
-- **Not built yet:** add-ons only work through the real Stripe path (the no-Stripe mock path
-  never creates orders, so `CheckoutBundle` hides the panel there); add-ons can't be partially
+- **Not built yet:** add-ons and singles-only orders only work through the real Stripe path (the
+  no-Stripe mock path never creates orders, so `CheckoutBundle` hides the panel there and
+  `MockCheckout` says so for a singles order); abandoned singles-order containers aren't cleaned up
+  (harmless — at most one per buyer+seller, reused); nothing checks a 20-card envelope's actual weight
+  against USPS's 3.5oz letter cap; add-ons can't be partially
   refunded/returned individually through claims; `packages/shared-contracts/openapi.yaml` wasn't
   updated (it isn't maintained for any recent endpoint).
 

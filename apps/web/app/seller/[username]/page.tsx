@@ -141,7 +141,7 @@ export default async function SellerProfilePage({
           )}
         </section>
 
-        <SinglesShopShowcase singles={singles} username={name} isOwner={isOwner} />
+        <SinglesShopShowcase singles={singles} username={name} isOwner={isOwner} isLoggedIn={Boolean(local)} />
 
         <ProfileReviews
           summary={reviewSummary}

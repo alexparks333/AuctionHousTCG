@@ -142,6 +142,13 @@ export default function TransactionsList({ orders: initialOrders }: { orders: Or
                     height={56}
                     className="h-14 w-14 shrink-0 rounded-lg object-cover"
                   />
+                ) : order.singlesCoverUrl ? (
+                  // A singles order's first card (TCG Haven's CDN, so not
+                  // next/image), centered in the same 56px slot.
+                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-brand-surface">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={order.singlesCoverUrl} alt="" className="h-12 w-auto rounded object-cover shadow-sm" />
+                  </div>
                 ) : (
                   <div className="h-14 w-14 shrink-0 rounded-lg bg-gradient-to-br from-brand-navy/20 to-brand-gold/20" />
                 )}
@@ -171,7 +178,8 @@ export default function TransactionsList({ orders: initialOrders }: { orders: Or
                       "them"
                     )}{" "}
                     · <span className="font-semibold text-gray-700">{formatPrice(amountCents)}</span>
-                    {order.bundleCardCount > 0 && (
+                    {/* A singles order's title already says how many cards. */}
+                    {order.bundleCardCount > 0 && !order.singlesOrder && (
                       <>
                         {" "}
                         · {order.bundleCardCount} {order.bundleCardCount === 1 ? "card" : "cards"} added

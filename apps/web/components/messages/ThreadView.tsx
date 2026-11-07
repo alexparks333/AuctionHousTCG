@@ -5,7 +5,7 @@ import Link from "next/link";
 import { ArrowLeft, Check, HandCoins, Send, X } from "lucide-react";
 import Avatar from "@/components/Avatar";
 import ListingImage from "@/components/ListingImage";
-import { acceptOffer, declineOffer, type ChatMessageOffer, type MessageThreadDetail } from "@/lib/api";
+import { acceptOffer, ApiError, declineOffer, type ChatMessageOffer, type MessageThreadDetail } from "@/lib/api";
 import { formatOfferStatus, formatPrice, offerStatusBadgeClass } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/format";
 
@@ -254,8 +254,12 @@ export default function ThreadView({
     setDraft("");
     try {
       await onSend(body);
-    } catch {
-      setError("Message didn't send — try again.");
+    } catch (err) {
+      // 429 carries the server's "Too many attempts…" wording, which says
+      // when to try again; anything else is a plain retry.
+      setError(
+        err instanceof ApiError && err.status === 429 ? err.message : "Message didn't send — try again.",
+      );
       setDraft(body);
     } finally {
       setSending(false);

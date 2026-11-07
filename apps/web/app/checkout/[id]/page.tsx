@@ -1,6 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, ChevronRight, Truck } from "lucide-react";
+import { ArrowLeft, ChevronRight, Mail, Store, Truck } from "lucide-react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import ListingGallery from "@/components/ListingGallery";
@@ -10,11 +10,16 @@ import CheckoutBundle from "@/components/checkout/CheckoutBundle";
 import { getActiveListings, getListing, getUserSingles, getWatchStatus } from "@/lib/api";
 import {
   ENABLED_GAMES,
+  MIN_SINGLES_ORDER_CENTS,
+  SINGLES_ENVELOPE_MAX_CARDS,
+  TRACKED_ENVELOPE_CENTS,
+  formatPrice,
   shippingCostLabel,
   shippingDisplayText,
   shippingMethodLabel,
 } from "@/lib/types";
 import { getLocalSession } from "@/lib/session";
+import type { Listing } from "@/lib/types";
 
 // The mock "Purchasing" page a Buy It Now click lands on — deliberately a
 // separate step from the click itself. Landing here (or even sitting here
@@ -43,6 +48,10 @@ export default async function CheckoutPage({
   if (!local) redirect("/login");
 
   const isOwner = local.userId === listing.sellerId;
+
+  if (listing.singlesOrder) {
+    return <SinglesOrderCheckout listing={listing} isOwner={isOwner} />;
+  }
 
   // Won via regular bidding (not Buy It Now) and not yet paid — ownership
   // already resolved when the auction closed, so this is purely a payment
@@ -228,6 +237,98 @@ export default async function CheckoutPage({
         )}
       </div>
 
+      <Footer />
+    </div>
+  );
+}
+
+// A singles-only order's checkout (its listing is the $0 container,
+// apps/api/internal/auction/singles_order.go): the seller's shop as an
+// editable cart on the left, the same payment card on the right. Once paid,
+// it's an ordinary order — /order/{id}.
+async function SinglesOrderCheckout({ listing, isOwner }: { listing: Listing; isOwner: boolean }) {
+  if (listing.buyerId) redirect(`/order/${listing.id}`);
+  const sellerName = listing.sellerUsername ?? "this seller";
+  const shopHref = listing.sellerUsername ? `/seller/${listing.sellerUsername}#singles` : "/";
+  const singles = !isOwner && listing.sellerUsername ? await getUserSingles(listing.sellerUsername) : [];
+
+  const header = (
+    <>
+      <div className="rounded-xl border border-brand-border bg-white p-5">
+        <div className="flex items-start gap-3">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-gold/15 text-brand-gold">
+            <Store size={20} />
+          </span>
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-brand-gold">Singles order</p>
+            <h1 className="mt-0.5 text-2xl font-bold text-gray-900">Singles from {sellerName}</h1>
+            <p className="mt-1 text-sm text-gray-500">
+              Singles bought on their own — at least {formatPrice(MIN_SINGLES_ORDER_CENTS)}. Every card ships together
+              in one order.
+            </p>
+          </div>
+        </div>
+        <div className="mt-4 flex items-start gap-2 rounded-lg bg-brand-surface px-3 py-2.5 text-xs text-gray-600">
+          <Mail size={14} className="mt-0.5 shrink-0 text-gray-400" />
+          <span>
+            Up to {SINGLES_ENVELOPE_MAX_CARDS} cards ship in a tracked envelope ({formatPrice(TRACKED_ENVELOPE_CENTS)});
+            more ship as a tracked package (bubble mailer or box), quoted at checkout.
+          </span>
+        </div>
+      </div>
+      <SellerCard username={listing.sellerUsername} tier={listing.sellerTier} />
+    </>
+  );
+
+  return (
+    <div className="flex min-h-screen flex-col bg-brand-surface">
+      <Header />
+      <div className="w-full px-10 py-6 sm:px-12 lg:px-14">
+        <Link
+          href={shopHref}
+          className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-gray-600 hover:text-brand-navy"
+        >
+          <ArrowLeft size={15} /> Back to {sellerName}&apos;s shop
+        </Link>
+        <nav className="mb-4 flex items-center gap-1.5 text-xs text-gray-500">
+          <Link href="/" className="hover:text-brand-navy">
+            Home
+          </Link>
+          <ChevronRight size={12} />
+          <Link href={shopHref} className="hover:text-brand-navy">
+            {sellerName}&apos;s Singles Shop
+          </Link>
+          <ChevronRight size={12} />
+          <span className="text-gray-700">Checkout</span>
+        </nav>
+
+        {isOwner ? (
+          <div className="grid gap-8 lg:grid-cols-[minmax(0,48rem)_1fr]">
+            <div className="flex flex-col gap-6">{header}</div>
+            <aside>
+              <div className="rounded-xl border border-brand-border bg-white p-5 text-center">
+                <p className="text-sm text-gray-500">This is your own Singles Shop — you can&apos;t buy from it.</p>
+              </div>
+            </aside>
+          </div>
+        ) : (
+          <CheckoutBundle
+            listingId={listing.id}
+            priceCents={0}
+            shippingPreset="tracked_envelope"
+            shippingMethod="Tracked envelope"
+            shippingCostLabel={`+${formatPrice(TRACKED_ENVELOPE_CENTS)} shipping`}
+            sellerName={sellerName}
+            singles={singles}
+            bundleListings={[]}
+            singlesOnly
+            backHref={shopHref}
+            backLabel={`Back to ${sellerName}'s shop`}
+          >
+            {header}
+          </CheckoutBundle>
+        )}
+      </div>
       <Footer />
     </div>
   );

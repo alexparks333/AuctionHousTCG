@@ -30,6 +30,7 @@ import (
 	"auctionhous-tcg/api/internal/mail"
 	"auctionhous-tcg/api/internal/payment"
 	"auctionhous-tcg/api/internal/platform"
+	"auctionhous-tcg/api/internal/shipping"
 )
 
 // closeInterval is how often the worker checks for ended auctions. This is
@@ -60,6 +61,7 @@ func main() {
 	defer pool.Close()
 
 	paymentClient := payment.NewClient(cfg.StripeSecretKey)
+	shippoClient = shipping.NewClient(cfg.ShippoAPIToken)
 	mailClient := mail.NewClient(cfg.ResendAPIKey, cfg.ClaimsNotifyFrom, cfg.ClaimsNotifyTo)
 	if !mailClient.IsConfigured() {
 		log.Println("RESEND_API_KEY not set — claim human-review email notifications disabled (see apps/api/.env.example)")

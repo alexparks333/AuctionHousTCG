@@ -47,7 +47,8 @@ export default function PurchaseHistoryTable({
         </thead>
         <tbody>
           {items.map((listing) => {
-            const href = `/listing/${listing.id}`;
+            // A singles order has no listing page — its row opens the order.
+            const href = listing.singlesOrder ? `/order/${listing.id}` : `/listing/${listing.id}`;
             const date = purchaseDate(listing);
             const counterpartyUsername =
               role === "buying" ? listing.sellerUsername : listing.buyerUsername;
@@ -81,7 +82,9 @@ export default function PurchaseHistoryTable({
                   <p className="font-semibold text-gray-900">
                     {formatPrice(purchasePriceCents(listing) + listing.bundleCents)}
                   </p>
-                  {listing.bundleCardCount > 0 && (
+                  {listing.singlesOrder ? (
+                    <p className="text-xs text-gray-500">Singles order</p>
+                  ) : listing.bundleCardCount > 0 && (
                     <p className="text-xs text-gray-500">
                       {formatPrice(purchasePriceCents(listing))} card + {formatPrice(listing.bundleCents)} for{" "}
                       {listing.bundleCardCount} bundled {listing.bundleCardCount === 1 ? "card" : "cards"}

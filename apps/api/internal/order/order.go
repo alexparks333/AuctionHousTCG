@@ -166,6 +166,10 @@ type CreateInput struct {
 	// add-ons (order_addons) were bundled onto the order; zero means "same
 	// as Quote.Subtotal" so callers without add-ons needn't set it.
 	PrimaryPriceCents int64
+	// SinglesOrder is a singles-only order: the primary listing is the
+	// $0 container (listing.Listing.SinglesOrder) and every card is an
+	// order_addons row, so its order_items price is 0, not the subtotal.
+	SinglesOrder bool
 }
 
 // CreateFromWin inserts one orders row (state=created) and its single
@@ -240,7 +244,7 @@ func CreateFromWin(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID, 
 	}
 
 	primaryPriceCents := in.PrimaryPriceCents
-	if primaryPriceCents == 0 {
+	if primaryPriceCents == 0 && !in.SinglesOrder {
 		primaryPriceCents = int64(q.Subtotal)
 	}
 	if _, err := pool.Exec(ctx, `

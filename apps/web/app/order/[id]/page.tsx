@@ -57,6 +57,8 @@ export default async function OrderConfirmationPage({
   // the purchase never happened) — send them to the real listing instead
   // of showing a confirmation/fulfillment view that isn't theirs.
   if (!isBuyer && !isSeller) {
+    // A singles order has no public listing page to fall back to.
+    if (listing.singlesOrder) notFound();
     redirect(`/listing/${id}`);
   }
 
@@ -90,8 +92,11 @@ export default async function OrderConfirmationPage({
   // (listing.soldPriceCents). Using priceCents directly here would show
   // the original asking price on this confirmation page instead of what
   // the buyer actually paid, the exact bug this was built to fix.
-  const paidCents = purchasePriceCents(listing);
+  // A singles-only order's container is $0 — what was paid for is its
+  // singles, i.e. the order's whole subtotal.
+  const paidCents = listing.singlesOrder && order ? order.subtotalCents : purchasePriceCents(listing);
   const photo = listing.imageUrls?.[0];
+  const singlesCover = listing.singlesOrder ? order?.addons?.find((a) => a.imageUrl)?.imageUrl : undefined;
 
   // Only fetched once there's a real order and a real buyer to review —
   // internal/buyerreview's endpoints both need an actual order behind
@@ -136,7 +141,9 @@ export default async function OrderConfirmationPage({
                   ? "Your bank payment is still processing — this can take a few business days."
                   : wonViaBidding
                     ? "You won this auction, and now it's paid for."
-                    : "Bought with Buy It Now, no bidding required."
+                    : listing.singlesOrder
+                      ? `Singles from ${listing.sellerUsername ?? "the seller"}'s shop — they'll ship together.`
+                      : "Bought with Buy It Now, no bidding required."
                 : awaitingBuyerPayment
                   ? "The buyer still needs to complete payment before you can ship."
                   : "Upload proof of shipment below once it's packed and ready to go."}
@@ -145,12 +152,19 @@ export default async function OrderConfirmationPage({
             <div className="mt-6 flex items-center gap-4 rounded-xl bg-brand-surface p-4 text-left">
               {photo ? (
                 <Image src={photo} alt="" width={64} height={64} className="h-16 w-16 rounded-lg object-cover" />
+              ) : singlesCover ? (
+                // A singles order has no photo of its own — its first card's
+                // catalog image (TCG Haven's CDN, so not next/image).
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={singlesCover} alt="" className="h-16 w-12 rounded-md object-cover shadow-sm" />
               ) : (
                 <div className="h-16 w-16 rounded-lg bg-gradient-to-br from-brand-navy/20 to-brand-gold/20" />
               )}
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-semibold text-gray-900">{listing.title}</p>
-                <p className="text-sm text-gray-500">{listing.set}</p>
+                <p className="text-sm text-gray-500">
+                  {listing.singlesOrder ? `From ${listing.sellerUsername ?? "the seller"}'s Singles Shop` : listing.set}
+                </p>
               </div>
               <p className="text-lg font-bold text-gray-900">{formatPrice(paidCents)}</p>
             </div>
@@ -163,12 +177,14 @@ export default async function OrderConfirmationPage({
             )}
 
             <div className="mt-6 flex justify-center gap-3">
-              <Link
-                href={`/listing/${listing.id}`}
-                className="rounded-full border border-gray-300 px-5 py-2 text-sm font-semibold text-gray-700 transition-colors hover:bg-brand-surface"
-              >
-                View listing
-              </Link>
+              {!listing.singlesOrder && (
+                <Link
+                  href={`/listing/${listing.id}`}
+                  className="rounded-full border border-gray-300 px-5 py-2 text-sm font-semibold text-gray-700 transition-colors hover:bg-brand-surface"
+                >
+                  View listing
+                </Link>
+              )}
               <Link
                 href={isBuyer ? "/account/history?view=bought" : "/account/selling"}
                 className="rounded-full bg-brand-navy px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-navy-light"
@@ -180,7 +196,7 @@ export default async function OrderConfirmationPage({
 
           {order && (
             <>
-              <OrderAddonsList addons={order.addons} viewerIsSeller={isSeller} />
+              <OrderAddonsList addons={order.addons} viewerIsSeller={isSeller} singlesOrder={listing.singlesOrder} />
               <OrderStatusPanel initialOrder={order} viewerIsSeller={isSeller} />
               <ClaimPanel
                 listingId={listing.id}

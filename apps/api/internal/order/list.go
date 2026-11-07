@@ -43,6 +43,14 @@ type Summary struct {
 	// the Selling page can mark those listings as part of a bundle too.
 	BundleCardCount  int      `json:"bundleCardCount"`
 	BundleListingIDs []string `json:"bundleListingIds"`
+	// SinglesOrder means this is a singles-only order: its "listing" is the
+	// hidden container (listing.Listing.SinglesOrder) and every card in it
+	// is counted in BundleCardCount.
+	SinglesOrder bool `json:"singlesOrder"`
+	// SinglesCoverURL is a singles order's thumbnail: its first card's
+	// catalog image (the container has no photo of its own). A TCG Haven
+	// catalog URL, not Supabase Storage, so it's rendered as a plain <img>.
+	SinglesCoverURL *string `json:"singlesCoverUrl,omitempty"`
 }
 
 // ListForUser returns every order userID is a participant in, either as
@@ -58,7 +66,12 @@ func ListForUser(ctx context.Context, pool *pgxpool.Pool, userID string) ([]Summ
 			su.username, bu.username,
 			coalesce((select sum(a.quantity) from order_addons a where a.order_id = o.id and a.voided_at is null), 0)::int,
 			coalesce((select array_agg(a.listing_id::text) from order_addons a
-				where a.order_id = o.id and a.voided_at is null and a.listing_id is not null), '{}')
+				where a.order_id = o.id and a.voided_at is null and a.listing_id is not null), '{}'),
+			l.singles_order,
+			case when l.singles_order then (
+				select s.image_url from order_addons a join shop_singles s on s.id = a.shop_single_id
+				where a.order_id = o.id and s.image_url is not null order by a.created_at limit 1
+			) end
 		from orders o
 		join order_items oi on oi.order_id = o.id
 		join listings l on l.id = oi.listing_id
@@ -97,7 +110,7 @@ func scanSummary(row pgx.Row, viewerID string) (*Summary, error) {
 		&o.ProviderShipmentID, &o.LabelCostCents, &o.LabelURL,
 		&s.ListingTitle, &s.ListingImageURL, &s.CounterpartyID, &s.CounterpartyUsername,
 		&s.SellerUsername, &s.BuyerUsername,
-		&s.BundleCardCount, &s.BundleListingIDs,
+		&s.BundleCardCount, &s.BundleListingIDs, &s.SinglesOrder, &s.SinglesCoverURL,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan order summary: %w", err)

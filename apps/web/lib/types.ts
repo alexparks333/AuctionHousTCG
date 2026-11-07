@@ -237,6 +237,12 @@ export interface Listing {
   // prefer this over priceCents once buyerId is set.
   soldPriceCents?: number;
 
+  // The hidden $0 "container" listing behind a singles-only order
+  // (apps/api/internal/auction/singles_order.go): every card in it is an
+  // order add-on. Never browsable — the checkout and order pages show it
+  // as a singles order instead of a listing.
+  singlesOrder?: boolean;
+
   // Set only when a real Stripe charge actually captured for this
   // purchase (internal/auction.HandleBuyNow). Undefined for a purchase
   // made through the no-Stripe mock-payment path, or a plain auction win
@@ -407,6 +413,13 @@ export function purchaseDate(listing: Listing): string | undefined {
 // tracked package instead of an envelope, and the buyer pays that rate.
 export const ENVELOPE_MAX_CARDS = 10;
 
+// Singles-only orders (a seller's Singles Shop bought on its own, no listed
+// card) — mirror apps/api/internal/auction.MinSinglesOrderCents and
+// internal/shipping.SinglesEnvelopeMaxCards. Up to 20 cards ship in a
+// tracked envelope; more ship as a tracked package (bubble mailer or box).
+export const MIN_SINGLES_ORDER_CENTS = 250;
+export const SINGLES_ENVELOPE_MAX_CARDS = 20;
+
 // Raw-card conditions, best to worst — mirrors apps/api/internal/catalog.
 // ConditionOrder (which runs worst to best). Shared by the Sell wizard and
 // the Singles Shop.
@@ -570,6 +583,10 @@ export function shippingMethodLabel(listing: Listing): string {
 // presets are envelope-mechanism (can't carry tracking/signature strong
 // enough once real money is at stake) vs. package-mechanism.
 const LETTER_PRESETS: ShippingPreset[] = ["free_envelope", "tracked_envelope"];
+
+export function isLetterPreset(preset: ShippingPreset): boolean {
+  return LETTER_PRESETS.includes(preset);
+}
 
 export interface EffectiveShipping {
   preset: ShippingPreset;

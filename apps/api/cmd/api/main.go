@@ -146,9 +146,9 @@ func main() {
 		mux.HandleFunc("GET /usernames/available", user.HandleUsernameAvailable(pool))
 		mux.HandleFunc("GET /users/{username}", user.HandleGetByUsername(pool))
 		mux.HandleFunc("GET /users/{username}/reviews", feedback.HandleListForSeller(pool))
-		mux.Handle("POST /users/{username}/reviews", verifier.RequireAuth(feedback.HandleUpsert(pool)))
+		mux.Handle("POST /users/{username}/reviews", verifier.RequireAuth(limits.review.Wrap(feedback.HandleUpsert(pool))))
 		mux.Handle("GET /users/{username}/reviewable-purchases", verifier.RequireAuth(feedback.HandleEligibleListings(pool)))
-		mux.Handle("POST /users/{username}/reviews/{reviewId}/reply", verifier.RequireAuth(feedback.HandleReply(pool)))
+		mux.Handle("POST /users/{username}/reviews/{reviewId}/reply", verifier.RequireAuth(limits.review.Wrap(feedback.HandleReply(pool))))
 		mux.HandleFunc("GET /users/{username}/buyer-stats", buyerreview.HandleStatsForUser(pool))
 
 		shippingClient := shipping.NewClient(cfg.ShippoAPIToken)
@@ -174,7 +174,7 @@ func main() {
 			}
 		}
 		mux.Handle("POST /shipping/verify-address", verifier.RequireAuth(limits.addressVerify.Wrap(shipping.HandleVerifyAddress(pbClient))))
-		mux.Handle("POST /listings", verifier.RequireAuth(agreement.RequireSeller(pool, listing.HandleCreate(pool, shippingClient))))
+		mux.Handle("POST /listings", verifier.RequireAuth(limits.listingCreate.Wrap(agreement.RequireSeller(pool, listing.HandleCreate(pool, shippingClient)))))
 		mux.HandleFunc("GET /listings", listing.HandleList(pool))
 		mux.HandleFunc("GET /listings/counts", listing.HandleCounts(pool))
 		mux.HandleFunc("GET /listings/{id}", listing.HandleGet(pool))
@@ -183,7 +183,7 @@ func main() {
 		// just a listing-status flip — see internal/auction/end_listing.go.
 		mux.Handle("DELETE /listings/{id}", verifier.RequireAuth(auction.HandleEndListing(pool)))
 		mux.Handle("GET /listings/{id}/photo-history", verifier.RequireAuth(listing.HandlePhotoHistory(pool, cfg.AdminEmails)))
-		mux.Handle("POST /listings/{id}/offers", verifier.RequireAuth(offer.HandleSubmit(pool)))
+		mux.Handle("POST /listings/{id}/offers", verifier.RequireAuth(limits.offer.Wrap(offer.HandleSubmit(pool))))
 		mux.Handle("GET /listings/{id}/offers", verifier.RequireAuth(offer.HandleListForListing(pool)))
 		mux.Handle("GET /me/offers/received", verifier.RequireAuth(offer.HandleListReceived(pool)))
 		mux.Handle("GET /me/offers/sent", verifier.RequireAuth(offer.HandleListSent(pool)))
@@ -221,6 +221,11 @@ func main() {
 				log.Println("Stripe: LIVE mode — real payments")
 			}
 			mux.Handle("POST /listings/{id}/checkout-intent", verifier.RequireAuth(limits.checkoutIntent.Wrap(auction.HandleCreateCheckoutIntent(pool, paymentClient, shippingClient))))
+			// Singles-only orders go through the same checkout as above —
+			// this only opens the buyer's order for that seller's shop
+			// (internal/auction/singles_order.go). Registered here because
+			// it's only usable with real payments.
+			mux.Handle("POST /users/{username}/singles-order", verifier.RequireAuth(limits.checkoutIntent.Wrap(auction.HandleStartSinglesOrder(pool))))
 			mux.Handle("GET /me/payment-methods", verifier.RequireAuth(paymentmethod.HandleList(pool, paymentClient)))
 			mux.Handle("POST /me/payment-methods/setup-intent", verifier.RequireAuth(paymentmethod.HandleCreateSetupIntent(pool, paymentClient)))
 			mux.Handle("POST /me/payment-methods/{id}/default", verifier.RequireAuth(paymentmethod.HandleSetDefault(pool, paymentClient)))
@@ -262,7 +267,7 @@ func main() {
 			// /me/seller/dev-tier-adjust just above.
 			mux.Handle("POST /listings/{id}/order/dev-advance", verifier.RequireAuth(order.HandleDevAdvance(pool, paymentClient)))
 			mux.Handle("GET /listings/{id}/order/buyer-review", verifier.RequireAuth(buyerreview.HandleGetForListing(pool)))
-			mux.Handle("POST /listings/{id}/order/buyer-review", verifier.RequireAuth(buyerreview.HandleUpsert(pool)))
+			mux.Handle("POST /listings/{id}/order/buyer-review", verifier.RequireAuth(limits.review.Wrap(buyerreview.HandleUpsert(pool))))
 			if !shippingClient.IsConfigured() && !pbClient.IsConfigured() {
 				log.Println("SHIPPO_API_TOKEN and PITNEY_BOWES_CLIENT_ID/SECRET not set — shipping-label purchase disabled (see apps/api/.env.example)")
 			} else {
@@ -285,14 +290,14 @@ func main() {
 			}
 
 			mux.Handle("GET /listings/{id}/order/claim", verifier.RequireAuth(dispute.HandleGetForListing(pool)))
-			mux.Handle("POST /claims", verifier.RequireAuth(dispute.HandleOpen(pool)))
+			mux.Handle("POST /claims", verifier.RequireAuth(limits.claimOpen.Wrap(dispute.HandleOpen(pool))))
 			mux.Handle("GET /claims/{id}", verifier.RequireAuth(dispute.HandleGet(pool)))
-			mux.Handle("POST /claims/{id}/messages", verifier.RequireAuth(dispute.HandleAddMessage(pool)))
-			mux.Handle("POST /claims/{id}/evidence", verifier.RequireAuth(dispute.HandleAddEvidence(pool)))
+			mux.Handle("POST /claims/{id}/messages", verifier.RequireAuth(limits.claimActivity.Wrap(dispute.HandleAddMessage(pool))))
+			mux.Handle("POST /claims/{id}/evidence", verifier.RequireAuth(limits.claimActivity.Wrap(dispute.HandleAddEvidence(pool))))
 			mux.Handle("POST /claims/{id}/resolve", verifier.RequireAuth(dispute.HandleResolveByAgreement(pool)))
 			mux.Handle("POST /claims/{id}/partial-refund-offer", verifier.RequireAuth(dispute.HandleProposePartialRefund(pool)))
 			mux.Handle("POST /claims/{id}/partial-refund-accept", verifier.RequireAuth(dispute.HandleAcceptPartialRefund(pool, paymentClient)))
-			mux.Handle("POST /claims/{id}/escalate", verifier.RequireAuth(dispute.HandleEscalate(pool, paymentClient, mailClient, cfg.WebOrigin)))
+			mux.Handle("POST /claims/{id}/escalate", verifier.RequireAuth(limits.claimActivity.Wrap(dispute.HandleEscalate(pool, paymentClient, mailClient, cfg.WebOrigin))))
 			mux.Handle("POST /claims/{id}/appeal", verifier.RequireAuth(dispute.HandleAppeal(pool)))
 			// Minimal admin-only surface (email allowlist, see
 			// internal/dispute/http.go's doc comment — no real admin app
@@ -345,7 +350,7 @@ func main() {
 			mux.HandleFunc("POST /webhooks/carrier", shipping.HandleDeliveryWebhook(pool, paymentClient, cfg.CarrierWebhookSecret))
 		}
 
-		mux.Handle("POST /listings/{id}/bids", verifier.RequireAuth(auction.HandlePlaceBid(pool)))
+		mux.Handle("POST /listings/{id}/bids", verifier.RequireAuth(limits.bid.Wrap(auction.HandlePlaceBid(pool))))
 		mux.Handle("POST /listings/{id}/buy-now", verifier.RequireAuth(auction.HandleBuyNow(pool, paymentClient)))
 		mux.Handle("/me/bids", verifier.RequireAuth(auction.HandleMyBids(pool)))
 		mux.Handle("GET /me/purchases", verifier.RequireAuth(auction.HandleMyPurchases(pool)))
@@ -357,9 +362,9 @@ func main() {
 		mux.Handle("POST /me/notifications/read-all", verifier.RequireAuth(notification.HandleMarkAllRead(pool)))
 
 		mux.Handle("GET /me/messages", verifier.RequireAuth(message.HandleMyThreads(pool)))
-		mux.Handle("POST /me/messages", verifier.RequireAuth(message.HandleStartThread(pool)))
+		mux.Handle("POST /me/messages", verifier.RequireAuth(limits.messageStart.Wrap(message.HandleStartThread(pool))))
 		mux.Handle("GET /me/messages/{id}", verifier.RequireAuth(message.HandleGetThread(pool)))
-		mux.Handle("POST /me/messages/{id}", verifier.RequireAuth(message.HandleSendMessage(pool)))
+		mux.Handle("POST /me/messages/{id}", verifier.RequireAuth(limits.messageSend.Wrap(message.HandleSendMessage(pool))))
 		// Dev-only — real auth (RequireAuth), gated to non-production at
 		// runtime inside DevSimulateIncoming itself
 		// (message.AllowDevSimulateIncoming, set above), same shape as
@@ -421,6 +426,12 @@ type rateLimits struct {
 	smsSend, emailSend, codeCheck, identityStart  *platform.RateLimiter
 	addressSuggest, addressResolve, addressVerify *platform.RateLimiter
 	checkoutIntent, labelBuy                      *platform.RateLimiter
+	// Free to us, but spammable: these cap one account's writes well above
+	// any real person's pace, so a script or a stolen login can't flood
+	// sellers with bids, offers or messages, or fill the site with junk.
+	bid, offer, messageStart, messageSend *platform.RateLimiter
+	listingCreate, review                 *platform.RateLimiter
+	claimOpen, claimActivity              *platform.RateLimiter
 }
 
 func newRateLimits() rateLimits {
@@ -453,5 +464,25 @@ func newRateLimits() rateLimits {
 			[]platform.RateRule{{Max: 60, Window: hour}}),
 		labelBuy: platform.NewRateLimiter("label-buy",
 			[]platform.RateRule{{Max: 10, Window: hour}, {Max: 40, Window: day}}),
+
+		// Bidding wars near the hard close can mean many bids in a row.
+		bid: platform.NewRateLimiter("bid",
+			[]platform.RateRule{{Max: 100, Window: 30 * time.Minute}}),
+		offer: platform.NewRateLimiter("offer",
+			[]platform.RateRule{{Max: 20, Window: hour}, {Max: 100, Window: day}}),
+		// New conversations are what spam looks like; replies are chat pace.
+		messageStart: platform.NewRateLimiter("message-start",
+			[]platform.RateRule{{Max: 20, Window: hour}, {Max: 100, Window: day}}),
+		messageSend: platform.NewRateLimiter("message-send",
+			[]platform.RateRule{{Max: 30, Window: time.Minute}, {Max: 1000, Window: day}}),
+		listingCreate: platform.NewRateLimiter("listing-create",
+			[]platform.RateRule{{Max: 100, Window: hour}, {Max: 500, Window: day}}),
+		review: platform.NewRateLimiter("review",
+			[]platform.RateRule{{Max: 15, Window: hour}}),
+		claimOpen: platform.NewRateLimiter("claim-open",
+			[]platform.RateRule{{Max: 5, Window: hour}, {Max: 10, Window: day}}),
+		// Claim messages, evidence and escalation (which emails support).
+		claimActivity: platform.NewRateLimiter("claim-activity",
+			[]platform.RateRule{{Max: 60, Window: hour}, {Max: 300, Window: day}}),
 	}
 }

@@ -161,6 +161,11 @@ func cancelUnpaidOrders(ctx context.Context, pool *pgxpool.Pool) {
 // unreliable seller, it just repeats the risk. Instead: a strike against
 // the seller, escalating to a real (if narrow and time-boxed) suspension
 // on the second one within shipStrikeWindowDays.
+// shippoClient refunds the unused label of an order cancelled before it
+// shipped (cancelUnshippedOrders). Set once in main; nil without a Shippo
+// token, which RefundUnusedPackageLabel handles.
+var shippoClient *shipping.Client
+
 func cancelUnshippedOrders(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client) {
 	rows, err := pool.Query(ctx, `
 		select o.id, o.stripe_payment_intent_id, o.seller_id, oi.listing_id from orders o
@@ -201,6 +206,11 @@ func cancelUnshippedOrders(ctx context.Context, pool *pgxpool.Pool, paymentClien
 		}
 		if err := order.ReleaseAddons(ctx, pool, r.id); err != nil {
 			log.Printf("worker: failed to release add-ons for unshipped order %s: %v", r.id, err)
+		}
+		// A label bought for an order that will never ship is wasted money —
+		// refund it (Shippo package labels only; envelopes can't be).
+		if err := shipping.RefundUnusedPackageLabel(ctx, pool, shippoClient, r.id); err != nil {
+			log.Printf("worker: couldn't refund the label for cancelled order %s: %v", r.id, err)
 		}
 		log.Printf("worker: order %s cancelled — no tracking uploaded within the ship deadline, refunded", r.id)
 		recordShipStrike(ctx, pool, r.sellerID, r.id, r.listingID)

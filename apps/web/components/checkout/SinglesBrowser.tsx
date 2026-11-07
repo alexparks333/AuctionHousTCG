@@ -36,10 +36,10 @@ type Filter = "in_stock" | "all";
 // price; cards they don't are greyed out. Click a card to add it (or pick a
 // condition/foil when the seller has more than one).
 //
-// Without `onChange` it's browse-only — the seller profile's "Open Their
-// Singles Shop" dialog: same layout, but clicking a card just shows its
-// conditions/finishes, prices and stock (singles are only bought as add-ons
-// at checkout).
+// Without `onChange` it's browse-only — the seller viewing their own shop
+// from their profile: same layout, but clicking a card just shows its
+// conditions/finishes, prices and stock. Everyone else gets a cart (the
+// profile's singles-only order, or checkout add-ons).
 const NO_SELECTION: AddonSelection = {};
 const noop = () => {};
 

@@ -1172,6 +1172,12 @@ export async function createCheckoutIntent(
   });
 }
 
+// Opens (or reuses) the caller's singles-only order for username's Singles
+// Shop and returns its id — the checkout page for it is /checkout/{id}.
+export async function startSinglesOrder(username: string): Promise<{ listingId: string }> {
+  return apiFetch(`/users/${encodeURIComponent(username)}/singles-order`, { method: "POST" });
+}
+
 // Requires auth — same explicit-accessToken shape as getMyBids. Every
 // card the caller has saved (internal/paymentmethod), for Account
 // Settings' initial render. Empty array (not an error) if they've never
@@ -1456,6 +1462,10 @@ export interface OrderSummary extends Order {
   // whole listings, so the Selling page can tag those as bundled too.
   bundleCardCount: number;
   bundleListingIds: string[];
+  // A singles-only order — every card is counted in bundleCardCount.
+  singlesOrder: boolean;
+  // Its first card's catalog image (not Supabase Storage — plain <img>).
+  singlesCoverUrl?: string;
 }
 
 // Every order the caller is a participant in, buyer or seller side,

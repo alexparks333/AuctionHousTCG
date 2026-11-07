@@ -339,6 +339,58 @@ func formatMessages(msgs []shippoMsg) string {
 	return out
 }
 
+// RefundStatus is the outcome of asking Shippo to refund a label.
+type RefundStatus string
+
+const (
+	// RefundRequested: Shippo accepted the refund and is still processing
+	// it (live labels can take days while the carrier confirms the label
+	// wasn't used).
+	RefundRequested RefundStatus = "requested"
+	// RefundDone: Shippo confirmed the refund (or the label was already
+	// refunded).
+	RefundDone RefundStatus = "refunded"
+)
+
+// ErrLabelNotRefundable means Shippo refused the refund — typically because
+// the carrier has already scanned the label (it's been used), or it's more
+// than 90 days old.
+var ErrLabelNotRefundable = errors.New("shipping: label can't be refunded")
+
+// RefundLabel asks Shippo to void and refund a label it sold (transactionID
+// is the label's transaction object_id, stored as provider_id/
+// provider_shipment_id). Verified against Shippo's test API: an unused label
+// returns 201 with status SUCCESS and the transaction becomes REFUNDED; a
+// second request for the same label returns 400 "not available for refunded
+// labels", which is treated here as already done (RefundDone) after
+// confirming the transaction really is REFUNDED. Any other refusal returns
+// ErrLabelNotRefundable wrapping Shippo's reason.
+func (c *Client) RefundLabel(ctx context.Context, transactionID string) (RefundStatus, error) {
+	var resp struct {
+		Status string `json:"status"`
+	}
+	err := c.post(ctx, "/refunds/", map[string]any{"transaction": transactionID, "async": false}, &resp)
+	if err != nil {
+		var apiErr *shippoAPIError
+		if !errors.As(err, &apiErr) || apiErr.status != http.StatusBadRequest {
+			return "", fmt.Errorf("shipping: refund request failed: %w", err)
+		}
+		var tx shippoTransactionResponse
+		if getErr := c.get(ctx, "/transactions/"+transactionID+"/", &tx); getErr == nil && tx.Status == "REFUNDED" {
+			return RefundDone, nil
+		}
+		return "", fmt.Errorf("%w: %s", ErrLabelNotRefundable, apiErr.body)
+	}
+	switch resp.Status {
+	case "SUCCESS":
+		return RefundDone, nil
+	case "QUEUED", "PENDING":
+		return RefundRequested, nil
+	default:
+		return "", fmt.Errorf("%w: refund status %q", ErrLabelNotRefundable, resp.Status)
+	}
+}
+
 func (c *Client) post(ctx context.Context, path string, body any, out any) error {
 	return c.do(ctx, http.MethodPost, path, body, out)
 }

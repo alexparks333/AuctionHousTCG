@@ -12,6 +12,7 @@ import {
   type ShippingLabel,
 } from "@/lib/api";
 import AddressAutocompleteInput from "@/components/AddressAutocompleteInput";
+import { formatPrice, isLetterPreset, TRACKED_ENVELOPE_CENTS, type ShippingPreset } from "@/lib/types";
 
 type VerifyStatus =
   | { state: "idle" }
@@ -68,9 +69,13 @@ export default function PrintLabelButton({
   state,
   onLabelChanged,
   className,
+  shippingPreset,
 }: {
   listingId: string;
   state: OrderState;
+  // Says which replacement rule applies (refunded package label vs.
+  // non-refundable envelope). Optional — without it both are explained.
+  shippingPreset?: ShippingPreset;
   onLabelChanged?: (label: ShippingLabel) => void;
   className?: string;
 }) {
@@ -343,6 +348,18 @@ export default function PrintLabelButton({
               )}
             </div>
           )}
+
+          {/* Mirrors HandleBuyLabel: replaced package labels are refunded,
+              envelope labels can't be, and an order can have at most
+              MaxLabelsPerOrder (3) labels. */}
+          <p className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-[11px] leading-snug text-amber-900 ring-1 ring-amber-200">
+            {shippingPreset && isLetterPreset(shippingPreset)
+              ? `Envelope labels can't be refunded — a new one costs another ${formatPrice(TRACKED_ENVELOPE_CENTS)}, taken from this sale.`
+              : shippingPreset
+                ? "Your current label is voided and refunded automatically when you buy a new one."
+                : "A replaced package label is refunded automatically; envelope labels can't be refunded."}{" "}
+            Each order can have up to 3 labels.
+          </p>
 
           {error && <p className="mt-2 text-[11px] text-brand-urgent">{error}</p>}
 

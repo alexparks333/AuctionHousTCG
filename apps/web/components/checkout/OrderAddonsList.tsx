@@ -7,13 +7,17 @@ import { formatPrice } from "@/lib/types";
 // Everything bundled onto an order at checkout ("Add Singles To Your
 // Order") — for the seller, the packing list for the same shipment as the
 // primary card; for the buyer, what they added. Voided lines (the order was
-// cancelled and the stock released) are shown struck through.
+// cancelled and the stock released) are shown struck through. For a
+// singles-only order (singlesOrder) these ARE the order — there's no main
+// card — so the wording changes.
 export default function OrderAddonsList({
   addons,
   viewerIsSeller,
+  singlesOrder = false,
 }: {
   addons: OrderAddon[] | undefined;
   viewerIsSeller: boolean;
+  singlesOrder?: boolean;
 }) {
   if (!addons || addons.length === 0) return null;
 
@@ -27,14 +31,18 @@ export default function OrderAddonsList({
     <section className="rounded-xl border border-brand-border bg-white p-5">
       <h2 className="flex items-center gap-1.5 text-sm font-semibold text-gray-900">
         <PackagePlus size={16} />
-        Singles Added To This Order
+        {singlesOrder ? "Singles In This Order" : "Singles Added To This Order"}
       </h2>
       <p className="mt-0.5 text-xs text-gray-500">
         {cardCount} {cardCount === 1 ? "card" : "cards"} ·{" "}
         {formatPrice(totalCents)},{" "}
-        {viewerIsSeller
-          ? "pack these in the same shipment as the main card."
-          : "shipping together with the main card."}
+        {singlesOrder
+          ? viewerIsSeller
+            ? "pack them all in one shipment."
+            : "shipping together in one package."
+          : viewerIsSeller
+            ? "pack these in the same shipment as the main card."
+            : "shipping together with the main card."}
       </p>
       <ul className="mt-3 flex flex-col divide-y divide-brand-border">
         {addons.map((a, i) => (

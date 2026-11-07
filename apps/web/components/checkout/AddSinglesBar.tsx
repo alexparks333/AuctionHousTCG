@@ -27,7 +27,12 @@ export default function AddSinglesBar({
   addedCards,
   addedCents,
   onOpen,
+  variant = "addon",
 }: {
+  // "addon" (default): singles added on top of a card's checkout. "singles":
+  // a singles-only order's checkout (SinglesOrderCart), where the singles
+  // ARE the order — same picker, different wording.
+  variant?: "addon" | "singles";
   // Called when the picker opens — CheckoutBundle re-syncs the seller's
   // stock so the quantities shown are current.
   onOpen?: () => void;
@@ -41,6 +46,7 @@ export default function AddSinglesBar({
 }) {
   const [open, setOpen] = useState(false);
   const available = singles.length + listings.length;
+  const singlesOnly = variant === "singles";
 
   useEffect(() => {
     if (!open) return;
@@ -71,12 +77,14 @@ export default function AddSinglesBar({
         </span>
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-semibold text-gray-900">
-            Add Singles To Your Order
+            {singlesOnly ? `Browse ${sellerName}'s Singles Shop` : "Add Singles To Your Order"}
           </span>
           <span className="block truncate text-xs text-gray-500">
-            {addedCards > 0
-              ? `${addedCards} added · ${formatPrice(addedCents)} · ships with your card`
-              : `${available} available from ${sellerName} · ships with your card`}
+            {singlesOnly
+              ? `${available} ${available === 1 ? "card" : "cards"} in stock · everything ships together`
+              : addedCards > 0
+                ? `${addedCards} added · ${formatPrice(addedCents)} · ships with your card`
+                : `${available} available from ${sellerName} · ships with your card`}
           </span>
         </span>
         <span className="flex items-center gap-1 text-xs font-semibold text-brand-navy">
@@ -97,7 +105,7 @@ export default function AddSinglesBar({
             className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6"
             role="dialog"
             aria-modal="true"
-            aria-label="Add Singles To Your Order"
+            aria-label={singlesOnly ? `${sellerName}'s Singles Shop` : "Add Singles To Your Order"}
           >
             <button
               type="button"
@@ -108,9 +116,13 @@ export default function AddSinglesBar({
             <div className="relative flex h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
               <div className="flex items-start justify-between gap-4 border-b border-brand-border px-5 py-4">
                 <div>
-                  <h2 className="text-lg font-bold text-gray-900">Add Singles To Your Order</h2>
+                  <h2 className="text-lg font-bold text-gray-900">
+                    {singlesOnly ? `${sellerName}'s Singles Shop` : "Add Singles To Your Order"}
+                  </h2>
                   <p className="mt-0.5 text-sm text-gray-500">
-                    From {sellerName}&apos;s shop. Everything ships together with your card.
+                    {singlesOnly
+                      ? "Everything you pick ships together in one order."
+                      : <>From {sellerName}&apos;s shop. Everything ships together with your card.</>}
                   </p>
                 </div>
                 <button
@@ -179,7 +191,8 @@ export default function AddSinglesBar({
 
 // The cart icon next to Done: a badge with how many cards are added, and a
 // popover listing each one (quantity, price, remove) with the subtotal.
-function CartButton({
+// Also used by the seller profile's singles-only cart (SinglesCartFooter).
+export function CartButton({
   singles,
   listings,
   selection,

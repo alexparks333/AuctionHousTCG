@@ -5,27 +5,74 @@ import { createPortal } from "react-dom";
 import Link from "next/link";
 import { ArrowRight, ChevronDown, PackagePlus, Settings2, Store, X } from "lucide-react";
 import SinglesBrowser from "@/components/checkout/SinglesBrowser";
-import { CONDITION_SHORT, ENABLED_GAMES, formatPrice, type ShopSingle } from "@/lib/types";
+import SinglesCartFooter, { cartStorageKey } from "@/components/singles/SinglesCartFooter";
+import type { AddonSelection } from "@/components/checkout/addonSelection";
+import {
+  CONDITION_SHORT,
+  ENABLED_GAMES,
+  MIN_SINGLES_ORDER_CENTS,
+  formatPrice,
+  type ShopSingle,
+} from "@/lib/types";
 
 // How many cards the profile previews before "Open Their Singles Shop".
 const PREVIEW_COUNT = 5;
 
 // A seller's Singles Shop on their public profile: a display case of their
 // most expensive in-stock cards, plus a button that opens the whole shop in
-// a dialog (SinglesBrowser, browse-only). Singles are never bought
-// standalone — they're added to an order at checkout on top of a card
-// bought or won from the same seller, which is what the copy here says.
+// a dialog (SinglesBrowser). For other people the dialog is a cart: singles
+// can be bought on their own (a singles-only order, at least
+// MIN_SINGLES_ORDER_CENTS — SinglesCartFooter checks out) or added to any
+// order from this seller at checkout with no minimum. For the owner it's
+// browse-only.
 export default function SinglesShopShowcase({
   singles,
   username,
   isOwner,
+  isLoggedIn,
 }: {
   singles: ShopSingle[];
   username: string;
   isOwner: boolean;
+  isLoggedIn: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const allInStock = useMemo(() => singles.filter((s) => s.quantity > 0), [singles]);
+
+  // The cart, kept per seller in sessionStorage so closing the dialog or
+  // reloading doesn't lose it — a convenience only, hence the try/catch.
+  // Restored after mount (not in useState's initializer) so the first
+  // client render matches the server HTML. Lines for singles no longer in
+  // stock are trimmed to what's left.
+  const cartKey = cartStorageKey(username);
+  const [cart, setCart] = useState<AddonSelection>({});
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem(cartKey);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time restore from browser storage after hydration (see above)
+      if (saved) setCart(JSON.parse(saved) as AddonSelection);
+    } catch {
+      // Storage unavailable or corrupt — start empty.
+    }
+  }, [cartKey]);
+  const effectiveCart = useMemo(() => {
+    const next: AddonSelection = {};
+    for (const [key, line] of Object.entries(cart)) {
+      const s = allInStock.find((x) => x.id === line.id);
+      const qty = Math.min(line.quantity, s?.quantity ?? 0);
+      if (line.kind === "single" && qty > 0) next[key] = { ...line, quantity: qty };
+    }
+    return next;
+  }, [cart, allInStock]);
+  function updateCart(next: AddonSelection) {
+    setCart(next);
+    try {
+      sessionStorage.setItem(cartKey, JSON.stringify(next));
+    } catch {
+      // Best-effort only.
+    }
+  }
+  const cartCards = Object.values(effectiveCart).reduce((n, l) => n + l.quantity, 0);
 
   // The game being previewed — the "TCG" dropdown next to the heading.
   // Distinct cards in stock per game, for the dropdown's counts; starts on
@@ -191,8 +238,8 @@ export default function SinglesShopShowcase({
                 <PackagePlus size={17} className="mt-0.5 shrink-0 text-brand-gold-light" />
                 <span>
                   {isOwner
-                    ? "Buyers add these to any order from you at checkout — one shipment."
-                    : `Buy or win any card from ${username}, then add these singles at checkout — they ship together.`}
+                    ? `Buyers can buy these on their own (from ${formatPrice(MIN_SINGLES_ORDER_CENTS)}) or add them to any order from you — one shipment.`
+                    : `Buy singles on their own (from ${formatPrice(MIN_SINGLES_ORDER_CENTS)}), or add them to any card you buy or win from ${username} — they ship together.`}
                 </span>
               </p>
               <button
@@ -200,7 +247,7 @@ export default function SinglesShopShowcase({
                 onClick={() => setOpen(true)}
                 className="group flex shrink-0 items-center gap-2 rounded-full bg-brand-gold px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-gold/20 transition-all hover:bg-brand-gold-light hover:shadow-brand-gold/40"
               >
-                Open Their Singles Shop
+                {isOwner ? "Open Your Singles Shop" : cartCards > 0 ? `Your Cart (${cartCards})` : "Shop Their Singles"}
                 <ArrowRight size={16} className="transition-transform group-hover:translate-x-0.5" />
               </button>
             </div>
@@ -252,8 +299,10 @@ export default function SinglesShopShowcase({
                   <div>
                     <h2 className="text-lg font-bold leading-tight">{username}&apos;s Singles Shop</h2>
                     <p className="text-xs text-white/60">
-                      {totalCards} {totalCards === 1 ? "card" : "cards"} in stock · add them at checkout when you buy a card
-                      from {username}
+                      {totalCards} {totalCards === 1 ? "card" : "cards"} in stock
+                      {isOwner
+                        ? ""
+                        : ` · buy them on their own from ${formatPrice(MIN_SINGLES_ORDER_CENTS)}, or add them to an order from ${username}`}
                     </p>
                   </div>
                 </div>
@@ -267,10 +316,31 @@ export default function SinglesShopShowcase({
                 </button>
               </div>
               <div className="relative min-h-0 flex-1">
-                {/* No onChange: browse-only. Listings are already on the
-                    profile page, so the dialog shows singles only. */}
-                <SinglesBrowser sellerName={username} singles={allInStock} listings={[]} initialGame={game} />
+                {/* The owner browses only (no onChange). Listings are
+                    already on the profile page, so the dialog shows
+                    singles only. */}
+                {isOwner ? (
+                  <SinglesBrowser sellerName={username} singles={allInStock} listings={[]} initialGame={game} />
+                ) : (
+                  <SinglesBrowser
+                    sellerName={username}
+                    singles={allInStock}
+                    listings={[]}
+                    initialGame={game}
+                    selection={effectiveCart}
+                    onChange={updateCart}
+                  />
+                )}
               </div>
+              {!isOwner && (
+                <SinglesCartFooter
+                  username={username}
+                  singles={allInStock}
+                  selection={effectiveCart}
+                  onChange={updateCart}
+                  isLoggedIn={isLoggedIn}
+                />
+              )}
             </div>
           </div>,
           document.body,

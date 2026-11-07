@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,6 +36,9 @@ type buyLabelResponse struct {
 	Service        string `json:"service"`
 	LabelURL       string `json:"labelUrl"`
 	CostCents      int64  `json:"costCents"`
+	// LabelsRemaining is how many more times this order's label can be
+	// changed (MaxLabelsPerOrder).
+	LabelsRemaining int `json:"labelsRemaining"`
 }
 
 // HandleBuyLabel is the seller's "get a shipping label" action — rate-shop
@@ -92,116 +96,176 @@ func HandleBuyLabel(pool *pgxpool.Pool, shippoClient *Client, pbClient *PitneyBo
 			return
 		}
 
-		preset := PresetTrackedEnvelope
-		if o.ShippingPreset != nil && Preset(*o.ShippingPreset).Valid() {
-			preset = Preset(*o.ShippingPreset)
-		}
-		mechanism := preset.Mechanism()
-
-		if mechanism == MechanismPackage && !shippoClient.IsConfigured() {
-			http.Error(w, "shipping label purchase is not configured", http.StatusServiceUnavailable)
+		lockErr := withLabelLock(r.Context(), pool, o.ID, func() error {
+			buyLabelLocked(w, r, pool, shippoClient, pbClient, o.ID, callerID, req)
+			return nil
+		})
+		if errors.Is(lockErr, ErrLabelPurchaseInProgress) {
+			http.Error(w, "A label is already being bought for this order. Please wait a moment and refresh.", http.StatusConflict)
 			return
 		}
-		if mechanism == MechanismLetter && !pbClient.IsConfigured() {
-			http.Error(w, "tracked envelope label purchase is not configured", http.StatusServiceUnavailable)
+		if lockErr != nil {
+			http.Error(w, lockErr.Error(), http.StatusInternalServerError)
+		}
+	}
+}
+
+// buyLabelLocked does the purchase while HandleBuyLabel holds the order's
+// label lock. It re-reads the order first, since another request may have
+// changed it while this one waited.
+//
+// Replacing a label never leaves the order paying for two:
+//   - Package (Shippo) labels: the new label is bought first, then the old
+//     one is refunded. If Shippo won't refund the old one (usually because
+//     the carrier already scanned it — it's been used), the new label is
+//     refunded instead and the order keeps the old one. Either way the
+//     order ends with exactly one paid-for label.
+//   - Envelope (Pitney Bowes) labels can't be refunded at all, so each one's
+//     cost is added to the order's label cost, which comes out of the
+//     seller's proceeds.
+//
+// Both are capped at MaxLabelsPerOrder labels per order.
+func buyLabelLocked(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, shippoClient *Client, pbClient *PitneyBowesClient, orderID, callerID string, req buyLabelRequest) {
+	ctx := r.Context()
+	o, err := order.GetByID(ctx, pool, orderID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if o.State != order.StateAwaitingShip {
+		http.Error(w, "a shipping label can only be bought or changed before the item ships", http.StatusConflict)
+		return
+	}
+
+	labelCount, err := countLabels(ctx, pool, o.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if labelCount >= MaxLabelsPerOrder {
+		http.Error(w, fmt.Sprintf("This order has already had %d shipping labels, the most allowed. Contact support if you need another.", MaxLabelsPerOrder), http.StatusConflict)
+		return
+	}
+
+	preset := PresetTrackedEnvelope
+	if o.ShippingPreset != nil && Preset(*o.ShippingPreset).Valid() {
+		preset = Preset(*o.ShippingPreset)
+	}
+	mechanism := preset.Mechanism()
+
+	if mechanism == MechanismPackage && !shippoClient.IsConfigured() {
+		http.Error(w, "shipping label purchase is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if mechanism == MechanismLetter && !pbClient.IsConfigured() {
+		http.Error(w, "tracked envelope label purchase is not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	var fromAddr *address.Address
+	if req.FromAddressOverride != nil {
+		normalized := address.Normalize(*req.FromAddressOverride)
+		if err := address.Validate(normalized); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-
-		var fromAddr *address.Address
-		if req.FromAddressOverride != nil {
-			normalized := address.Normalize(*req.FromAddressOverride)
-			if err := address.Validate(normalized); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			fromAddr = &normalized
-		} else {
-			fromAddr, err = address.Get(r.Context(), pool, o.SellerID)
-			if err != nil {
-				if errors.Is(err, address.ErrNotFound) {
-					http.Error(w, "add a return address in Account Settings before buying a label", http.StatusBadRequest)
-					return
-				}
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
-		toAddr, err := address.Get(r.Context(), pool, o.BuyerID)
+		fromAddr = &normalized
+	} else {
+		fromAddr, err = address.Get(ctx, pool, o.SellerID)
 		if err != nil {
 			if errors.Is(err, address.ErrNotFound) {
-				http.Error(w, "the buyer has no shipping address on file yet", http.StatusBadRequest)
+				http.Error(w, "add a return address in Account Settings before buying a label", http.StatusBadRequest)
 				return
 			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		// Both vendors require an email per address (discovered live with
-		// Shippo) — the address book itself doesn't store one
-		// (internal/address's own doc comment: that's shipping PII, not
-		// identity), so pull each party's account email instead.
-		fromUser, err := user.Get(r.Context(), pool, o.SellerID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		toUser, err := user.Get(r.Context(), pool, o.BuyerID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// TODO(before flipping SHIPPO_API_TOKEN to a live key): this always buys
-		// a brand-new label/transaction and never voids the one it's replacing
-		// (o.ProviderShipmentID has the id a Shippo refund call would need).
-		// Harmless today since the token is shippo_test_..., but on a live key
-		// every "Change Shipping Label" click becomes a second real charge with
-		// no refund of the first. Pitney Bowes specifically can never be voided
-		// at all, refund or no — see recordedCostCents below.
-		var label *Label
-		if mechanism == MechanismLetter {
-			label, err = pbClient.BuyLabel(r.Context(), fromAddr, toAddr, fromUser.Email, toUser.Email)
-		} else {
-			label, err = shippoClient.BuyLabel(r.Context(), fromAddr, toAddr, fromUser.Email, toUser.Email, preset, o.SignatureRequired)
-		}
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-
-		// recordedCostCents is what actually gets persisted and shown on the
-		// receipt — for Pitney Bowes (MechanismLetter), that's the running
-		// total of every purchase ever made on this order, not just this
-		// latest one. Pitney Bowes' IMb labels are confirmed non-refundable
-		// (their own docs: "You cannot request refunds for FCM letters and
-		// flats") — mechanism is fixed for the life of an order (set once at
-		// order creation, never changes between purchases on it), so if
-		// o.LabelCostCents is already set here, every cent of it was already
-		// spent on a real, un-refundable earlier label. Silently overwriting
-		// it with just the new purchase's cost would make that earlier real
-		// money vanish from the receipt entirely — the exact accounting gap
-		// a real "Change Shipping Label" click surfaced live. Shippo/package
-		// labels are left overwriting for now (the TODO above already covers
-		// that gap; scoped here to the mechanism that can never be voided).
-		recordedCostCents := label.CostCents
-		if mechanism == MechanismLetter && o.LabelCostCents != nil && *o.LabelCostCents > 0 {
-			recordedCostCents += *o.LabelCostCents
-		}
-
-		if err := order.SetLabel(r.Context(), pool, o.ID, callerID, label.Carrier, label.TrackingNumber, label.ProviderShipmentID, label.LabelURL, recordedCostCents); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(buyLabelResponse{
-			TrackingNumber: label.TrackingNumber,
-			Carrier:        label.Carrier,
-			Service:        label.Service,
-			LabelURL:       label.LabelURL,
-			CostCents:      recordedCostCents,
-		})
 	}
+	toAddr, err := address.Get(ctx, pool, o.BuyerID)
+	if err != nil {
+		if errors.Is(err, address.ErrNotFound) {
+			http.Error(w, "the buyer has no shipping address on file yet", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Both vendors require an email per address (discovered live with
+	// Shippo) — the address book itself doesn't store one
+	// (internal/address's own doc comment: that's shipping PII, not
+	// identity), so pull each party's account email instead.
+	fromUser, err := user.Get(ctx, pool, o.SellerID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	toUser, err := user.Get(ctx, pool, o.BuyerID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var label *Label
+	if mechanism == MechanismLetter {
+		label, err = pbClient.BuyLabel(ctx, fromAddr, toAddr, fromUser.Email, toUser.Email)
+	} else {
+		label, err = shippoClient.BuyLabel(ctx, fromAddr, toAddr, fromUser.Email, toUser.Email, preset, o.SignatureRequired)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	// Recorded before anything else, so even a label that ends up refunded
+	// below counts toward the cap and leaves an audit trail.
+	if err := recordLabel(ctx, pool, o.ID, mechanism, label); err != nil {
+		log.Printf("shipping: order %s bought label %s but couldn't record it: %v", o.ID, label.ProviderShipmentID, err)
+	}
+
+	// Replacing a Shippo label: refund the old one now that the new one
+	// exists. If that's refused, refund the new one instead and keep the old.
+	if mechanism == MechanismPackage && o.ProviderShipmentID != nil && *o.ProviderShipmentID != "" {
+		oldID := *o.ProviderShipmentID
+		status, refundErr := shippoClient.RefundLabel(ctx, oldID)
+		if refundErr != nil {
+			_ = recordRefund(ctx, pool, o.ID, oldID, "rejected", refundErr.Error())
+			newStatus, undoErr := shippoClient.RefundLabel(ctx, label.ProviderShipmentID)
+			if undoErr != nil {
+				_ = recordRefund(ctx, pool, o.ID, label.ProviderShipmentID, "rejected", undoErr.Error())
+				log.Printf("shipping: order %s has two unrefundable labels (%s, %s) — needs manual review", o.ID, oldID, label.ProviderShipmentID)
+			} else {
+				_ = recordRefund(ctx, pool, o.ID, label.ProviderShipmentID, string(newStatus), "undone: old label couldn't be refunded")
+			}
+			http.Error(w, "Your current label can't be replaced because Shippo won't refund it — usually that means the carrier has already scanned it. Ship with your current label.", http.StatusConflict)
+			return
+		}
+		_ = recordRefund(ctx, pool, o.ID, oldID, string(status), "")
+	}
+
+	// What the order records as its label cost (deducted from the seller's
+	// proceeds). A replaced Shippo label was refunded above, so only the new
+	// one counts. Envelope labels can't be refunded, so every one bought on
+	// this order adds up — mechanism never changes during an order, so any
+	// existing cost on a letter order is earlier envelope labels.
+	recordedCostCents := label.CostCents
+	if mechanism == MechanismLetter && o.LabelCostCents != nil && *o.LabelCostCents > 0 {
+		recordedCostCents += *o.LabelCostCents
+	}
+
+	if err := order.SetLabel(ctx, pool, o.ID, callerID, label.Carrier, label.TrackingNumber, label.ProviderShipmentID, label.LabelURL, recordedCostCents); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(buyLabelResponse{
+		TrackingNumber:  label.TrackingNumber,
+		Carrier:         label.Carrier,
+		Service:         label.Service,
+		LabelURL:        label.LabelURL,
+		CostCents:       recordedCostCents,
+		LabelsRemaining: MaxLabelsPerOrder - (labelCount + 1),
+	})
 }
 
 // HandleDownloadLabel proxies the order's already-purchased label PDF

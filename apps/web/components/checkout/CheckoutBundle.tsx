@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, X } from "lucide-react";
 import MockCheckout from "@/components/MockCheckout";
 import AddSinglesBar from "@/components/checkout/AddSinglesBar";
+import SinglesOrderCart from "@/components/checkout/SinglesOrderCart";
 import { toRequests, type AddonSelection } from "@/components/checkout/addonSelection";
 import { isStripeConfigured } from "@/lib/stripe";
 import { onAddonsUnavailable } from "@/lib/checkoutEvents";
@@ -28,8 +29,18 @@ export default function CheckoutBundle({
   sellerName,
   singles,
   bundleListings,
+  singlesOnly = false,
+  backHref,
+  backLabel,
   children,
 }: {
+  // A singles-only order (the listing is its $0 container): the selection
+  // IS the order — shown as an editable cart under `children` instead of
+  // the compact add-ons bar, with the singles-only minimum enforced by
+  // MockCheckout.
+  singlesOnly?: boolean;
+  backHref?: string;
+  backLabel?: string;
   listingId: string;
   priceCents: number;
   shippingPreset: ShippingPreset;
@@ -162,11 +173,22 @@ export default function CheckoutBundle({
     <div className="grid gap-8 lg:grid-cols-[minmax(0,48rem)_1fr]">
       <div className="flex flex-col gap-6">
         {children}
+        {singlesOnly && offerAddons && (
+          <SinglesOrderCart
+            sellerName={sellerName}
+            singles={singles}
+            selection={effectiveSelection}
+            onChange={updateSelection}
+            onOpen={resync}
+            addedCards={addedCards}
+            addedCents={previewCents}
+          />
+        )}
       </div>
 
       <aside>
         <div className="sticky top-6">
-          {offerAddons && (
+          {offerAddons && !singlesOnly && (
             <AddSinglesBar
               sellerName={sellerName}
               singles={singles}
@@ -215,6 +237,9 @@ export default function CheckoutBundle({
             addonsPreviewCents={previewCents}
             addedCards={addedCards}
             addonsVersion={addonsVersion}
+            singlesOnly={singlesOnly}
+            backHref={backHref}
+            backLabel={backLabel}
           />
         </div>
       </aside>

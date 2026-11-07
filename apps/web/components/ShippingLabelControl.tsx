@@ -207,7 +207,12 @@ export default function ShippingLabelControl({
               </p>
             )}
           </div>
-          <PrintLabelButton listingId={listingId} state={state} onLabelChanged={handleLabelChanged} />
+          <PrintLabelButton
+            listingId={listingId}
+            state={state}
+            shippingPreset={shippingPreset}
+            onLabelChanged={handleLabelChanged}
+          />
         </div>
       </div>
     );

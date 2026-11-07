@@ -340,6 +340,20 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 			rail = order.RailAch
 		}
 
+		// A singles-only order (singles_order.go) only exists through the
+		// real payment path — its cards are add-ons, which the no-Stripe
+		// mock path can't carry.
+		if lst.SinglesOrder {
+			if pi == nil {
+				http.Error(w, "singles-only orders need online payment", http.StatusBadRequest)
+				return
+			}
+			if err := checkSinglesOrderBuyer(r.Context(), pool, lst, buyerID); err != nil {
+				http.Error(w, err.Error(), singlesOrderErrStatus(err))
+				return
+			}
+		}
+
 		// Checkout add-ons ("Add Singles To Your Order", addons.go) are
 		// whatever this PaymentIntent authorized, read back by its verified
 		// id — never re-stated by the client. Claimed before the primary
@@ -360,6 +374,17 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
+			}
+			// Re-checked from what this PaymentIntent actually authorized,
+			// not just at intent time.
+			if lst.SinglesOrder {
+				if err := checkSinglesCart(addons); err != nil {
+					if cancelErr := paymentClient.Cancel(r.Context(), pi.ID); cancelErr != nil {
+						log.Printf("buy-now: failed to cancel payment intent %s for an invalid singles order: %v", pi.ID, cancelErr)
+					}
+					http.Error(w, err.Error(), singlesCartStatus(err))
+					return
+				}
 			}
 			if len(addons) > 0 {
 				level, err := kyc.LevelForUser(r.Context(), pool, buyerID)
@@ -388,6 +413,8 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 
 		var result *listing.Listing
 		switch {
+		case lst.SinglesOrder:
+			result, err = paySinglesOrder(r.Context(), pool, listingID, buyerID, addons)
 		case payingForWonFixedOffer:
 			result, err = PayForWonFixedListing(r.Context(), pool, listingID, buyerID)
 		case lst.Format == listing.FormatFixed:
@@ -415,7 +442,7 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 				status = http.StatusNotFound
 			case errors.Is(err, listing.ErrAlreadySold), errors.Is(err, ErrAuctionEnded), errors.Is(err, ErrNoBuyItNowPrice), errors.Is(err, listing.ErrNotFixedFormat), errors.Is(err, ErrAlreadyPaid):
 				status = http.StatusConflict
-			case errors.Is(err, listing.ErrSelfPurchase), errors.Is(err, ErrSelfBid), errors.Is(err, ErrAccountSuspended), errors.Is(err, ErrListingSuspended), errors.Is(err, listing.ErrAccountSuspended), errors.Is(err, listing.ErrListingSuspended), errors.Is(err, kyc.ErrPurchaseNotAllowed), errors.Is(err, kyc.ErrExceedsPurchaseCap):
+			case errors.Is(err, errSinglesOrderNotYours), errors.Is(err, listing.ErrSelfPurchase), errors.Is(err, ErrSelfBid), errors.Is(err, ErrAccountSuspended), errors.Is(err, ErrListingSuspended), errors.Is(err, listing.ErrAccountSuspended), errors.Is(err, listing.ErrListingSuspended), errors.Is(err, kyc.ErrPurchaseNotAllowed), errors.Is(err, kyc.ErrExceedsPurchaseCap):
 				status = http.StatusForbidden
 			}
 			http.Error(w, err.Error(), status)
@@ -535,8 +562,10 @@ func containsUSBankAccount(types []string) bool {
 // Stripe payment already committed, so a failure here must never look like
 // the purchase itself failed.
 func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, listingID, buyerID, sellerID string, pi *stripe.PaymentIntent, chargeID, fingerprint string, rail order.Rail, result *listing.Listing, addons []checkoutAddon) {
+	// A singles-only order's container is $0 by design — every card is an
+	// add-on.
 	primaryPriceCents := subtotalForResult(result)
-	if primaryPriceCents <= 0 {
+	if primaryPriceCents <= 0 && !result.SinglesOrder {
 		log.Printf("buy-now: no purchasable price on result for order record (listing %s)", listingID)
 		return
 	}
@@ -552,8 +581,7 @@ func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, paymentClient *p
 	// stricter, per internal/shipping's package doc — still safe to
 	// recompute fresh (a pure function of the subtotal/listing preset),
 	// unlike shippingCents/signatureRequired below.
-	resolvedPreset, fallbackSignatureRequired := shipping.UpgradePreset(shipping.Preset(result.ShippingPreset), subtotalCents, result.RequestSignature)
-	resolvedPreset = shipping.UpgradeForItemCount(resolvedPreset, 1+addonsCardCount(addons))
+	resolvedPreset, fallbackSignatureRequired := resolveOrderShipping(result, subtotalCents, orderCardCount(result, addons))
 
 	// shippingCents/signatureRequired come straight off the PaymentIntent's
 	// own metadata — the exact live-quoted number checkout.go authorized
@@ -584,6 +612,7 @@ func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, paymentClient *p
 		ShippingPreset:        string(resolvedPreset),
 		SignatureRequired:     signatureRequired,
 		PrimaryPriceCents:     primaryPriceCents,
+		SinglesOrder:          result.SinglesOrder,
 	}
 
 	// A won-via-bidding purchase already has a real, unpaid order row —

@@ -187,6 +187,14 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 
 		var subtotalCents int64
 		switch {
+		// A singles-only order's container (singles_order.go): the item
+		// itself is $0 — the whole order is its add-ons, checked below.
+		case lst.SinglesOrder:
+			if err := checkSinglesOrderBuyer(r.Context(), pool, lst, buyerID); err != nil {
+				http.Error(w, err.Error(), singlesOrderErrStatus(err))
+				return
+			}
+
 		// A fixed listing already reserved for THIS buyer and not yet
 		// paid — only reachable via an accepted offer (internal/offer.
 		// Accept), which sets buyer_id/sold_price_cents immediately but
@@ -241,7 +249,7 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 			http.Error(w, ErrNoBuyItNowPrice.Error(), http.StatusConflict)
 			return
 		}
-		if subtotalCents <= 0 {
+		if subtotalCents <= 0 && !lst.SinglesOrder {
 			http.Error(w, "listing has no purchasable price", http.StatusConflict)
 			return
 		}
@@ -263,9 +271,15 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 			}
 			return
 		}
+		if lst.SinglesOrder {
+			if err := checkSinglesCart(addons); err != nil {
+				http.Error(w, err.Error(), singlesCartStatus(err))
+				return
+			}
+		}
 		itemCents := subtotalCents
 		subtotalCents += addonsSubtotal(addons)
-		cardCount := 1 + addonsCardCount(addons)
+		cardCount := orderCardCount(lst, addons)
 
 		level, err := kyc.LevelForUser(r.Context(), pool, buyerID)
 		if err != nil {
@@ -299,10 +313,10 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 		// createOrderRecord does at capture time (shipping.UpgradePreset),
 		// so the authorized amount and the eventually-recorded order amount
 		// can never drift apart.
-		resolvedPreset, signatureRequired := shipping.UpgradePreset(shipping.Preset(lst.ShippingPreset), subtotalCents, lst.RequestSignature)
-		// A bundle too big for an envelope ships as a package — computed
-		// identically in createOrderRecord from the same add-on rows.
-		resolvedPreset = shipping.UpgradeForItemCount(resolvedPreset, cardCount)
+		// A bundle too big for an envelope ships as a package, and a
+		// singles-only order follows its own rule — resolveOrderShipping,
+		// computed identically in createOrderRecord from the same add-on rows.
+		resolvedPreset, signatureRequired := resolveOrderShipping(lst, subtotalCents, cardCount)
 
 		// Real, live-quoted shipping cost — not the listing's frozen
 		// estimate — whenever a real quote is actually possible: this is

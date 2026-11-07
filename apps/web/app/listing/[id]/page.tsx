@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import { ChevronRight, ShieldCheck, Feather } from "lucide-react";
 import Header from "@/components/Header";
@@ -52,6 +52,13 @@ export default async function ListingPage({
   // need for getCurrentSession()'s slower getUser() network verification.
   const [listing, local] = await Promise.all([getListing(id), getLocalSession()]);
   if (!listing) notFound();
+  // A singles-only order's hidden container (lib/types.ts singlesOrder) is
+  // never a listing page — it only exists as its order (which checks who's
+  // asking) or, before payment, its checkout.
+  if (listing.singlesOrder) {
+    if (listing.buyerId) redirect(`/order/${id}`);
+    notFound();
+  }
 
   const isOwner = local?.userId === listing.sellerId;
   // Covers both formats: a fixed-price listing sold the moment it has a

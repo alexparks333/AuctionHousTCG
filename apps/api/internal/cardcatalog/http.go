@@ -6,6 +6,9 @@ import (
 	"net/http"
 )
 
+// maxQueryLen caps GET /catalog/search's q, in bytes.
+const maxQueryLen = 100
+
 // HandleSearch backs GET /catalog/search?game=&q= — public, unauthenticated
 // (same as GET /listings), since it never touches anything user-specific.
 // Returns an empty array (not an error) for a game TCG Haven doesn't track,
@@ -19,6 +22,12 @@ func HandleSearch(client *Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		game := r.URL.Query().Get("game")
 		q := r.URL.Query().Get("q")
+		// Public and unauthenticated, so bound the work one request can
+		// ask for — no card name comes close to this.
+		if len(q) > maxQueryLen {
+			http.Error(w, "search is too long", http.StatusBadRequest)
+			return
+		}
 		if q == "" {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode([]Card{})

@@ -255,3 +255,21 @@ func UpgradeForItemCount(preset Preset, itemCount int) Preset {
 	}
 	return preset
 }
+
+// SinglesEnvelopeMaxCards is the envelope limit for a singles-only order
+// (Singles Shop cards bought on their own, no listed card) — higher than
+// EnvelopeMaxCards because those are loose commons/uncommons/rares packed
+// together in a team bag, not a toploadered chase card plus extras
+// (product decision).
+const SinglesEnvelopeMaxCards = 20
+
+// SinglesOrderPreset is how a singles-only order ships — never a seller
+// choice: up to SinglesEnvelopeMaxCards cards go as a tracked envelope, more
+// than that as a tracked package (a bubble mailer or box) at the live
+// Shippo rate. The buyer pays either way.
+func SinglesOrderPreset(cardCount int) Preset {
+	if cardCount > SinglesEnvelopeMaxCards {
+		return PresetShippoGroundAdvantage
+	}
+	return PresetTrackedEnvelope
+}

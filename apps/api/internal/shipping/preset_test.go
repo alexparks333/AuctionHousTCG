@@ -24,3 +24,19 @@ func TestUpgradeForItemCount(t *testing.T) {
 		})
 	}
 }
+
+func TestSinglesOrderPreset(t *testing.T) {
+	for _, tt := range []struct {
+		count int
+		want  Preset
+	}{
+		{1, PresetTrackedEnvelope},
+		{SinglesEnvelopeMaxCards, PresetTrackedEnvelope},
+		{SinglesEnvelopeMaxCards + 1, PresetShippoGroundAdvantage},
+		{200, PresetShippoGroundAdvantage},
+	} {
+		if got := SinglesOrderPreset(tt.count); got != tt.want {
+			t.Errorf("SinglesOrderPreset(%d) = %s, want %s", tt.count, got, tt.want)
+		}
+	}
+}

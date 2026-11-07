@@ -223,6 +223,12 @@ type Listing struct {
 	// listing's PriceCents needs to be), so this field is fixed-only.
 	SoldPriceCents *int64 `json:"soldPriceCents,omitempty"`
 
+	// SinglesOrder marks the hidden container listing behind a singles-only
+	// purchase (migration 0067, internal/auction/singles_order.go): price 0,
+	// its singles live in order_addons. Never shown in browse, search, or
+	// anyone's listings — only as the order it holds.
+	SinglesOrder bool `json:"singlesOrder,omitempty"`
+
 	// PaidAt is set only when a real Stripe capture actually succeeded for
 	// this purchase (internal/auction.HandleBuyNow, after the atomic
 	// purchase itself already committed) — coalesced from whichever table
@@ -308,7 +314,7 @@ const selectColumns = `
 	l.status, l.created_at, l.buyer_id, l.sold_at,
 	a.starting_bid_cents, a.current_price_cents, a.high_bidder_id, a.bid_count, a.ends_at, a.outcome,
 	a.buy_it_now_price_cents, a.closed_at, coalesce(l.paid_at, a.paid_at), bu.username,
-	l.allow_offers, l.min_offer_cents, l.sold_price_cents
+	l.allow_offers, l.min_offer_cents, l.sold_price_cents, l.singles_order
 `
 const fromClause = `
 	from listings l
@@ -331,7 +337,7 @@ func scanListing(row rowScanner) (Listing, error) {
 		&lst.ShippingPreset, &lst.EstimatedShippingCents, &lst.RequestSignature, &lst.ImageUrls, &lst.WatcherCount, &lst.Status, &lst.CreatedAt, &lst.BuyerID, &lst.SoldAt,
 		&lst.StartingBidCents, &lst.CurrentPriceCents, &lst.HighBidderID, &lst.BidCount, &lst.EndsAt, &lst.Outcome,
 		&lst.BuyItNowPriceCents, &lst.ClosedAt, &lst.PaidAt, &lst.BuyerUsername,
-		&lst.AllowOffers, &lst.MinOfferCents, &lst.SoldPriceCents,
+		&lst.AllowOffers, &lst.MinOfferCents, &lst.SoldPriceCents, &lst.SinglesOrder,
 	)
 	if err != nil {
 		return Listing{}, err
@@ -1056,6 +1062,7 @@ func ListActive(ctx context.Context, pool *pgxpool.Pool, f ListFilters) ([]Listi
 	query := `
 		select ` + selectColumns + ` ` + fromClause + `
 		where l.status = any($1)
+			and not l.singles_order
 			and not exists (select 1 from account_suspensions s where s.user_id = l.seller_id and now() < s.ends_at)
 	`
 	args := []any{statuses}

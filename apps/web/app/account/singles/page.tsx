@@ -26,9 +26,8 @@ export default async function SinglesShopPage() {
     <div className="px-10 py-8 sm:px-12 lg:px-14">
       <h1 className="text-xl font-bold text-gray-900">Singles Shop</h1>
       <p className="mt-1 max-w-3xl text-sm text-gray-500">
-        Sell singles by quantity alongside your listings. Cards in full color are in your shop; greyed-out cards
-        aren&apos;t. Click any card to stock it. Prices are set automatically from the market price, the same in every
-        shop. Buyers can add your singles to any order from you at checkout, and it all ships together.
+        Click any card to stock it — full color means it&apos;s in your shop. Prices are set from the market, the same
+        in every shop. Buyers can buy your singles on their own or add them to any order from you.
       </p>
       {agreements && !agreements.seller ? (
         <div className="mt-6 max-w-3xl">
